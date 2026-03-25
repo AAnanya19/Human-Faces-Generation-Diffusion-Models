@@ -60,30 +60,31 @@ def create_dataloaders(batch_size=32, image_size=128, seed=42, num_workers=0):
     return train_loader, val_loader, test_loader
 
 
-def show_images(batch, title=""):
-    fig, axes = plt.subplots(1, 6, figsize=(15, 3))
-    fig.suptitle(title)
+# UNCOMMENT TO CHECK THAT DATALOADERS ARE WORKING - CHECKS NORMALISATION AND IMAGES
+# def show_images(batch, title=""):
+#     fig, axes = plt.subplots(1, 6, figsize=(15, 3))
+#     fig.suptitle(title)
 
-    for i in range(6):
-        img = batch[i].permute(1, 2, 0).cpu()
-        img = (img * 0.5) + 0.5  # unnormalize
-        axes[i].imshow(img.clamp(0, 1))
-        axes[i].axis("off")
+#     for i in range(6):
+#         img = batch[i].permute(1, 2, 0).cpu()
+#         img = (img * 0.5) + 0.5  # unnormalize
+#         axes[i].imshow(img.clamp(0, 1))
+#         axes[i].axis("off")
 
-    plt.show()
+#     plt.show()
 
 
-if __name__ == "__main__":
-    train_loader, val_loader, test_loader = create_dataloaders()
+# if __name__ == "__main__":
+#     train_loader, val_loader, test_loader = create_dataloaders()
 
-    train_batch = next(iter(train_loader))
-    val_batch = next(iter(val_loader))
-    test_batch = next(iter(test_loader))
+#     train_batch = next(iter(train_loader))
+#     val_batch = next(iter(val_loader))
+#     test_batch = next(iter(test_loader))
 
-    print("Train min/max:", train_batch.min().item(), train_batch.max().item())
-    print("Val min/max:", val_batch.min().item(), val_batch.max().item())
-    print("Test min/max:", test_batch.min().item(), test_batch.max().item())
+#     print("Train min/max:", train_batch.min().item(), train_batch.max().item())
+#     print("Val min/max:", val_batch.min().item(), val_batch.max().item())
+#     print("Test min/max:", test_batch.min().item(), test_batch.max().item())
 
-    show_images(train_batch, "Train Batch")
-    show_images(val_batch, "Val Batch")
-    show_images(test_batch, "Test Batch")
+#     show_images(train_batch, "Train Batch")
+#     show_images(val_batch, "Val Batch")
+#     show_images(test_batch, "Test Batch")
