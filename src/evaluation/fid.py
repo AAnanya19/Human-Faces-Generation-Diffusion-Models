@@ -2,7 +2,8 @@
 Fréchet Inception Distance (FID) between two sets of images on disk.
 
 Expects RGB images saved as PNG/JPEG. Images are resized to a fixed square size,
-loaded as float tensors in [0, 1], then passed to torchmetrics FID (Inception v3).
+loaded as float tensors in [0, 1], then converted to ``uint8`` in [0, 255] for the
+Inception backbone (required when ``torch-fidelity`` is installed).
 
 If your sampling code outputs tensors in [-1, 1], denormalize to [0, 1] before
 saving files, or add a small helper next to the inference script.
@@ -55,6 +56,11 @@ def _batched(
 ) -> Iterator[torch.Tensor]:
     for batch in loader:
         yield batch
+
+
+def _float01_batch_to_uint8(batch: torch.Tensor) -> torch.Tensor:
+    """Convert NCHW float in [0, 1] to uint8 [0, 255] for torch-fidelity FID."""
+    return (batch * 255.0).clamp(0.0, 255.0).to(torch.uint8)
 
 
 def compute_fid_from_directories(
@@ -118,8 +124,10 @@ def compute_fid_from_directories(
     fid = FrechetInceptionDistance(feature=2048).to(device)
 
     for batch in _batched(real_loader):
-        fid.update(batch.to(device), real=True)
+        x = _float01_batch_to_uint8(batch.to(device))
+        fid.update(x, real=True)
     for batch in _batched(fake_loader):
-        fid.update(batch.to(device), real=False)
+        x = _float01_batch_to_uint8(batch.to(device))
+        fid.update(x, real=False)
 
     return fid.compute()
