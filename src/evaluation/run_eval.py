@@ -86,6 +86,7 @@ def main() -> None:
         paths = list_image_paths(args.grid_from)
         out = args.grid_out
         if out is None:
+            # Default sits under results/butterflies/eval/ (whitelisted in .gitignore for small eval artefacts).
             out = Path("results/butterflies/eval/sample_grid.png")
         grid_from_paths(paths, out)
         print(f"Saved grid to {out}")
