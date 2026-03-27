@@ -10,6 +10,7 @@ env/
 data/*
 !data/dataloader.py
 !data/README.md
+!data/__init__.py
 
 
 results/*
