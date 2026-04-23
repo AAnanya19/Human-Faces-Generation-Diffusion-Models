@@ -10,8 +10,6 @@ This file:
 What this model consists of:
 1. A sinusoidal timestep embedding
    - tells the network how noisy the current image is
-   - standard in diffusion models because the same image content
-     should be processed differently at different timesteps
 
 2. Residual convolution blocks
    - more stable than plain stacked convolutions
@@ -19,31 +17,21 @@ What this model consists of:
 
 3. Downsampling and upsampling stages
    - allow the network to learn both local details and larger structure
-   - important for objects like butterflies where both wing texture
-     and overall symmetry matter
 
 4. Skip connections
    - preserve fine spatial detail from earlier layers
    - core part of the U-Net idea
 
-5. Self-attention in the lower-resolution part of the network
+5. Self attention in the lower resolution part of the network
    - helps the model reason over larger spatial relationships
-   - useful for structured objects like butterflies where left/right
-     wing symmetry and global layout matter
 
-Why these choices were made:
-- The earlier compact U-Net was likely too small for this dataset
-- The butterfly dataset is small, but the model still needs enough
-  capacity to capture shape, colour, and wing structure
-- This version is still lightweight enough for a toy task, but is
-  closer in spirit to standard DDPM denoisers than the first version
+
 
 References:
 - Ho et al., "Denoising Diffusion Probabilistic Models", 2020
-- The general U-Net structure follows the standard encoder-decoder
-  design used widely in image generation
+- The general U-Net structure follows the standard encoder decoder design
 - The use of timestep conditioning and attention is inspired by common
-  DDPM implementations and the Hugging Face butterfly diffusion tutorial,
+  DDPM implementations and the Hugging Face diffusion tutorial,
   but this implementation is written from scratch for this project
 
 Model summary:
@@ -103,7 +91,6 @@ class ResidualBlock(nn.Module):
         GroupNorm -> SiLU -> Conv
         + residual connection
 
-    Using a residual path makes training deeper models easier.
     """
 
     def __init__(self, in_channels: int, out_channels: int, time_dim: int, groups: int = 8):
@@ -147,7 +134,7 @@ class SelfAttentionBlock(nn.Module):
     """
     Lightweight self-attention block for 2D feature maps.
 
-    Why include this:
+    
     - convolution is very good at local patterns
     - attention helps connect information across distant spatial regions
     - useful for global butterfly structure and symmetry
@@ -218,7 +205,7 @@ class UpBlock(nn.Module):
     One decoder stage.
 
     This block:
-    - upsamples the lower-resolution feature map
+    - upsamples the lower resolution feature map
     - concatenates the corresponding skip connection
     - applies two residual blocks
     - optionally applies attention
@@ -255,18 +242,14 @@ class UpBlock(nn.Module):
 
 class UNet(nn.Module):
     """
-    Improved U-Net for DDPM noise prediction.
+     U Net for DDPM noise prediction.
 
-    Compared with the earlier compact version, this one:
+    Compared with the previoius implemtation this one :
     - uses a wider channel progression
     - uses residual blocks instead of plain conv blocks
     - includes attention at deeper stages
-    - should be better suited to the butterfly dataset
 
-    Suggested use:
-    - start with image_size=64
-    - keep batch size modest
-    - train first at 64x64 before trying 128x128
+    
     """
 
     def __init__(

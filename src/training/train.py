@@ -10,7 +10,7 @@ This file:
 - Saves model checkpoints during training
 
 Reference:
-- The training objective follows the standard DDPM formulation:
+- The training follows the standard DDPM formulation:
   predict the noise added to x_0 at a random timestep t
 - The loss used here is mean squared error between:
     predicted_noise and true_noise
