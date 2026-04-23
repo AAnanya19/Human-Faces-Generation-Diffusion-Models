@@ -93,6 +93,10 @@ def train(
     grad_clip: float = 1.0,
     sample_every: int = 10,
     num_sample_images: int = 8,
+    dataset_source: str = "hf",
+    dataset_path: str | None = None,
+    folder_subset_size: int | None = None,
+    folder_test_size: int = 0,
 ):
     """
     Train the DDPM denoising model on the butterfly dataset.
@@ -131,6 +135,19 @@ def train(
         num_sample_images:
             Number of generated images to include in each saved grid.
 
+        dataset_source:
+            Dataset backend. Use "hf" for the butterfly dataset or "folder" for
+            a local image directory such as an unzipped Kaggle dataset.
+
+        dataset_path:
+            Root folder containing images when dataset_source is "folder".
+
+        folder_subset_size:
+            Optional cap on how many images to use from a folder dataset.
+
+        folder_test_size:
+            Number of images reserved for the test split when using a folder dataset.
+
     Returns:
         model:
             Trained U-Net model
@@ -150,8 +167,11 @@ def train(
         "device": device,
         "save_dir": save_dir,
         "dataset": {
-            "name": "huggan/smithsonian_butterflies_subset",
-            "split": "full_train_split_only",
+            "source": dataset_source,
+            "name": "huggan/smithsonian_butterflies_subset" if dataset_source == "hf" else None,
+            "path": dataset_path,
+            "folder_subset_size": folder_subset_size,
+            "folder_test_size": folder_test_size,
         },
         "model": {
             "in_channels": 3,
@@ -178,6 +198,10 @@ def train(
     train_loader, _, _ = create_dataloaders(
         batch_size=batch_size,
         image_size=image_size,
+        dataset_source=dataset_source,
+        dataset_path=dataset_path,
+        folder_subset_size=folder_subset_size,
+        folder_test_size=folder_test_size,
     )
 
     # --------------------------------------------------------------
@@ -196,7 +220,8 @@ def train(
     )
 
     criterion = nn.MSELoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=lr, weight_decay=weight_decay)
 
     losses = []
     sample_dir = Path(save_dir) / "generated_samples"
@@ -238,7 +263,8 @@ def train(
             optimizer.zero_grad()
             loss.backward()
             if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), max_norm=grad_clip)
             optimizer.step()
 
             running_loss += loss.item()
@@ -289,6 +315,10 @@ if __name__ == "__main__":
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--sample_every", type=int, default=10)
     parser.add_argument("--num_sample_images", type=int, default=8)
+    parser.add_argument("--dataset_source", type=str, default="hf")
+    parser.add_argument("--dataset_path", type=str, default=None)
+    parser.add_argument("--folder_subset_size", type=int, default=None)
+    parser.add_argument("--folder_test_size", type=int, default=0)
     args = parser.parse_args()
 
     device = resolve_device(args.device)
@@ -307,6 +337,10 @@ if __name__ == "__main__":
         grad_clip=args.grad_clip,
         sample_every=args.sample_every,
         num_sample_images=args.num_sample_images,
+        dataset_source=args.dataset_source,
+        dataset_path=args.dataset_path,
+        folder_subset_size=args.folder_subset_size,
+        folder_test_size=args.folder_test_size,
     )
 
     print("Training complete.")
