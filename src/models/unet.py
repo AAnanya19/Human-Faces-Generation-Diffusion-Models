@@ -1,32 +1,55 @@
 # models/unet.py
 """
-DDPM U-Net (simple implementation)
+DDPM U-Net (improved implementation)
 
 This file:
 - Defines the denoising model used in diffusion training
 - Takes a noisy image x_t and timestep t as input
 - Predicts the noise epsilon_theta(x_t, t)
 
-Reference:
-- The overall design follows the standard encoder-decoder U-Net idea
-  used in diffusion models and image-to-image architectures
-- The timestep conditioning follows the common DDPM approach of
-  embedding t and injecting that information into convolution blocks
-- This implementation is written from scratch in a smaller and simpler
-  form for the butterfly task
+What this model consists of:
+1. A sinusoidal timestep embedding
+   - tells the network how noisy the current image is
+   - standard in diffusion models because the same image content
+     should be processed differently at different timesteps
 
-Note:
-- This is a compact U-Net for unconditional image generation
-- It is designed for a small toy task 
-- It uses:
-    1. sinusoidal timestep embeddings
-    2. convolution blocks with time conditioning
-    3. downsampling and upsampling with skip connections
+2. Residual convolution blocks
+   - more stable than plain stacked convolutions
+   - help feature reuse and make deeper models easier to train
+
+3. Downsampling and upsampling stages
+   - allow the network to learn both local details and larger structure
+   - important for objects like butterflies where both wing texture
+     and overall symmetry matter
+
+4. Skip connections
+   - preserve fine spatial detail from earlier layers
+   - core part of the U-Net idea
+
+5. Self-attention in the lower-resolution part of the network
+   - helps the model reason over larger spatial relationships
+   - useful for structured objects like butterflies where left/right
+     wing symmetry and global layout matter
+
+Why these choices were made:
+- The earlier compact U-Net was likely too small for this dataset
+- The butterfly dataset is small, but the model still needs enough
+  capacity to capture shape, colour, and wing structure
+- This version is still lightweight enough for a toy task, but is
+  closer in spirit to standard DDPM denoisers than the first version
+
+References:
+- Ho et al., "Denoising Diffusion Probabilistic Models", 2020
+- The general U-Net structure follows the standard encoder-decoder
+  design used widely in image generation
+- The use of timestep conditioning and attention is inspired by common
+  DDPM implementations and the Hugging Face butterfly diffusion tutorial,
+  but this implementation is written from scratch for this project
 
 Model summary:
 Input:
-    x_t  -> noisy image tensor of shape [B, C, H, W]
-    t    -> timestep tensor of shape [B]
+    x_t -> noisy image tensor of shape [B, C, H, W]
+    t   -> timestep tensor of shape [B]
 
 Output:
     predicted noise of shape [B, C, H, W]
@@ -45,15 +68,7 @@ class SinusoidalTimeEmbedding(nn.Module):
     """
     Creates sinusoidal embeddings for diffusion timesteps.
 
-    This is similar in spirit to positional encodings used in transformers,
-    but here it is used to tell the network how much noise is present
-    in the image at timestep t.
-
-    Input:
-        timesteps: [B]
-
-    Output:
-        embedding: [B, embedding_dim]
+    This gives the network a continuous representation of timestep t.
     """
 
     def __init__(self, embedding_dim: int):
@@ -61,23 +76,15 @@ class SinusoidalTimeEmbedding(nn.Module):
         self.embedding_dim = embedding_dim
 
     def forward(self, timesteps: torch.Tensor) -> torch.Tensor:
-        """
-        Convert integer timesteps into sinusoidal embeddings.
-        """
         device = timesteps.device
         half_dim = self.embedding_dim // 2
 
-        # Build the frequency scales used for sine/cosine encoding
         exponent = -math.log(10000) / max(half_dim - 1, 1)
         frequencies = torch.exp(torch.arange(half_dim, device=device) * exponent)
 
-        # Expand timesteps so each one is multiplied by all frequencies
         angles = timesteps.float().unsqueeze(1) * frequencies.unsqueeze(0)
-
-        # Concatenate sine and cosine parts
         embedding = torch.cat([torch.sin(angles), torch.cos(angles)], dim=1)
 
-        # If embedding_dim is odd, pad one extra dimension
         if self.embedding_dim % 2 == 1:
             embedding = torch.cat(
                 [embedding, torch.zeros((embedding.size(0), 1), device=device)], dim=1
@@ -86,103 +93,121 @@ class SinusoidalTimeEmbedding(nn.Module):
         return embedding
 
 
-class ConvBlock(nn.Module):
+class ResidualBlock(nn.Module):
     """
-    A basic convolution block with timestep conditioning.
+    Residual convolution block with timestep conditioning.
 
     Structure:
-        Conv -> GroupNorm -> SiLU
-        + projected time embedding
-        Conv -> GroupNorm -> SiLU
+        GroupNorm -> SiLU -> Conv
+        add projected time embedding
+        GroupNorm -> SiLU -> Conv
+        + residual connection
 
-    Why this block exists:
-    - image features are processed through convolutions
-    - timestep information is projected and added to the feature maps
-    - this allows the model to adapt its behaviour depending on t
+    Using a residual path makes training deeper models easier.
     """
 
-    def __init__(self, in_channels: int, out_channels: int, time_dim: int):
+    def __init__(self, in_channels: int, out_channels: int, time_dim: int, groups: int = 8):
         super().__init__()
 
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.norm1 = nn.GroupNorm(num_groups=8, num_channels=out_channels)
+        self.norm1 = nn.GroupNorm(groups, in_channels)
         self.act1 = nn.SiLU()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
 
         self.time_mlp = nn.Linear(time_dim, out_channels)
 
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-        self.norm2 = nn.GroupNorm(num_groups=8, num_channels=out_channels)
+        self.norm2 = nn.GroupNorm(groups, out_channels)
         self.act2 = nn.SiLU()
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
 
-        # If the number of channels changes, use a 1x1 projection for residual path
         if in_channels != out_channels:
             self.residual_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
         else:
             self.residual_conv = nn.Identity()
 
     def forward(self, x: torch.Tensor, time_emb: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass for one conditioned convolution block.
-
-        Args:
-            x:
-                Input feature map of shape [B, C, H, W]
-
-            time_emb:
-                Timestep embedding of shape [B, time_dim]
-
-        Returns:
-            Output feature map of shape [B, out_channels, H, W]
-        """
         residual = self.residual_conv(x)
 
-        h = self.conv1(x)
-        h = self.norm1(h)
+        h = self.norm1(x)
         h = self.act1(h)
+        h = self.conv1(h)
 
-        # Project timestep embedding and add it to the feature map
-        # Reshape from [B, C] to [B, C, 1, 1] so it can broadcast spatially
+        # Add timestep information after the first convolution.
+        # This lets the block adapt its feature processing based on t.
         time_term = self.time_mlp(time_emb).unsqueeze(-1).unsqueeze(-1)
         h = h + time_term
 
-        h = self.conv2(h)
         h = self.norm2(h)
         h = self.act2(h)
+        h = self.conv2(h)
 
         return h + residual
 
 
+class SelfAttentionBlock(nn.Module):
+    """
+    Lightweight self-attention block for 2D feature maps.
+
+    Why include this:
+    - convolution is very good at local patterns
+    - attention helps connect information across distant spatial regions
+    - useful for global butterfly structure and symmetry
+    """
+
+    def __init__(self, channels: int, num_heads: int = 4, groups: int = 8):
+        super().__init__()
+        self.norm = nn.GroupNorm(groups, channels)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=channels,
+            num_heads=num_heads,
+            batch_first=True,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, c, h, w = x.shape
+        residual = x
+
+        x = self.norm(x)
+        x = x.view(b, c, h * w).transpose(1, 2)  # [B, HW, C]
+
+        attn_out, _ = self.attn(x, x, x)
+        attn_out = attn_out.transpose(1, 2).view(b, c, h, w)
+
+        return attn_out + residual
+
+
 class DownBlock(nn.Module):
     """
-    One downsampling stage of the U-Net.
+    One encoder stage.
 
     This block:
-    - processes features with two conv blocks
-    - returns a skip connection
-    - downsamples the feature map for the next stage
+    - applies two residual blocks
+    - optionally applies attention
+    - stores a skip connection
+    - downsamples the feature map
     """
 
-    def __init__(self, in_channels: int, out_channels: int, time_dim: int):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        time_dim: int,
+        use_attention: bool = False,
+    ):
         super().__init__()
 
-        self.block1 = ConvBlock(in_channels, out_channels, time_dim)
-        self.block2 = ConvBlock(out_channels, out_channels, time_dim)
+        self.block1 = ResidualBlock(in_channels, out_channels, time_dim)
+        self.block2 = ResidualBlock(out_channels, out_channels, time_dim)
+        self.attn = SelfAttentionBlock(out_channels) if use_attention else nn.Identity()
 
         self.downsample = nn.Conv2d(
             out_channels, out_channels, kernel_size=4, stride=2, padding=1
         )
 
     def forward(self, x: torch.Tensor, time_emb: torch.Tensor):
-        """
-        Returns:
-            downsampled_features:
-                Feature map after spatial downsampling
-
-            skip:
-                Feature map used later in the decoder path
-        """
         x = self.block1(x, time_emb)
         x = self.block2(x, time_emb)
+        x = self.attn(x)
+
         skip = x
         x = self.downsample(x)
         return x, skip
@@ -190,70 +215,58 @@ class DownBlock(nn.Module):
 
 class UpBlock(nn.Module):
     """
-    One upsampling stage of the U-Net.
+    One decoder stage.
 
     This block:
     - upsamples the lower-resolution feature map
-    - concatenates the matching skip connection from the encoder
-    - processes the combined features with two conv blocks
+    - concatenates the corresponding skip connection
+    - applies two residual blocks
+    - optionally applies attention
     """
 
-    def __init__(self, in_channels: int, skip_channels: int, out_channels: int, time_dim: int):
+    def __init__(
+        self,
+        in_channels: int,
+        skip_channels: int,
+        out_channels: int,
+        time_dim: int,
+        use_attention: bool = False,
+    ):
         super().__init__()
 
         self.upsample = nn.ConvTranspose2d(
             in_channels, out_channels, kernel_size=4, stride=2, padding=1
         )
 
-        self.block1 = ConvBlock(out_channels + skip_channels, out_channels, time_dim)
-        self.block2 = ConvBlock(out_channels, out_channels, time_dim)
+        self.block1 = ResidualBlock(out_channels + skip_channels, out_channels, time_dim)
+        self.block2 = ResidualBlock(out_channels, out_channels, time_dim)
+        self.attn = SelfAttentionBlock(out_channels) if use_attention else nn.Identity()
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        skip: torch.Tensor,
-        time_emb: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Args:
-            x:
-                Current decoder feature map
-
-            skip:
-                Matching encoder feature map
-
-            time_emb:
-                Timestep embedding
-
-        Returns:
-            Refined upsampled feature map
-        """
+    def forward(self, x: torch.Tensor, skip: torch.Tensor, time_emb: torch.Tensor) -> torch.Tensor:
         x = self.upsample(x)
-
-        # Concatenate skip connection along the channel dimension
         x = torch.cat([x, skip], dim=1)
 
         x = self.block1(x, time_emb)
         x = self.block2(x, time_emb)
+        x = self.attn(x)
+
         return x
 
 
 class UNet(nn.Module):
     """
-    A compact U-Net for DDPM noise prediction.
+    Improved U-Net for DDPM noise prediction.
 
-    Architecture:
-    - input projection
-    - timestep embedding
-    - two downsampling stages
-    - bottleneck
-    - two upsampling stages
-    - output projection back to image channels
+    Compared with the earlier compact version, this one:
+    - uses a wider channel progression
+    - uses residual blocks instead of plain conv blocks
+    - includes attention at deeper stages
+    - should be better suited to the butterfly dataset
 
-    This version is intentionally small and suitable for:
-    - butterfly toy task
-    - 64x64 or 128x128 images
-    - initial from-scratch DDPM experiments
+    Suggested use:
+    - start with image_size=64
+    - keep batch size modest
+    - train first at 64x64 before trying 128x128
     """
 
     def __init__(
@@ -265,11 +278,7 @@ class UNet(nn.Module):
     ):
         super().__init__()
 
-        # ------------------------------------------------------------------
-        # 1. Timestep embedding
-        # ------------------------------------------------------------------
-        # First create sinusoidal embeddings, then pass them through
-        # a small MLP so the model can learn a more useful time representation.
+        # Time embedding pipeline
         self.time_embedding = nn.Sequential(
             SinusoidalTimeEmbedding(time_dim),
             nn.Linear(time_dim, time_dim),
@@ -277,32 +286,44 @@ class UNet(nn.Module):
             nn.Linear(time_dim, time_dim),
         )
 
-        # ------------------------------------------------------------------
-        # 2. Initial image projection
-        # ------------------------------------------------------------------
-        # Project the RGB image into the first feature space.
+        # Initial projection from RGB image to feature space
         self.init_conv = nn.Conv2d(in_channels, base_channels, kernel_size=3, padding=1)
 
-        # ------------------------------------------------------------------
-        # 3. Encoder / downsampling path
-        # ------------------------------------------------------------------
-        self.down1 = DownBlock(base_channels, base_channels * 2, time_dim)     # 64 -> 128
-        self.down2 = DownBlock(base_channels * 2, base_channels * 4, time_dim) # 128 -> 256
+        # Encoder path
+        # 64 -> 128 -> 256 -> 256
+        self.down1 = DownBlock(
+            in_channels=base_channels,
+            out_channels=base_channels,
+            time_dim=time_dim,
+            use_attention=False,
+        )
 
-        # ------------------------------------------------------------------
-        # 4. Bottleneck
-        # ------------------------------------------------------------------
-        self.mid_block1 = ConvBlock(base_channels * 4, base_channels * 4, time_dim)
-        self.mid_block2 = ConvBlock(base_channels * 4, base_channels * 4, time_dim)
+        self.down2 = DownBlock(
+            in_channels=base_channels,
+            out_channels=base_channels * 2,
+            time_dim=time_dim,
+            use_attention=False,
+        )
 
-        # ------------------------------------------------------------------
-        # 5. Decoder / upsampling path
-        # ------------------------------------------------------------------
+        self.down3 = DownBlock(
+            in_channels=base_channels * 2,
+            out_channels=base_channels * 4,
+            time_dim=time_dim,
+            use_attention=True,
+        )
+
+        # Bottleneck
+        self.mid_block1 = ResidualBlock(base_channels * 4, base_channels * 4, time_dim)
+        self.mid_attn = SelfAttentionBlock(base_channels * 4)
+        self.mid_block2 = ResidualBlock(base_channels * 4, base_channels * 4, time_dim)
+
+        # Decoder path
         self.up1 = UpBlock(
             in_channels=base_channels * 4,
             skip_channels=base_channels * 4,
             out_channels=base_channels * 2,
             time_dim=time_dim,
+            use_attention=True,
         )
 
         self.up2 = UpBlock(
@@ -310,12 +331,20 @@ class UNet(nn.Module):
             skip_channels=base_channels * 2,
             out_channels=base_channels,
             time_dim=time_dim,
+            use_attention=False,
         )
 
-        # ------------------------------------------------------------------
-        # 6. Final output projection
-        # ------------------------------------------------------------------
-        # Map decoder features back to the same number of channels as the input image.
+        self.up3 = UpBlock(
+            in_channels=base_channels,
+            skip_channels=base_channels,
+            out_channels=base_channels,
+            time_dim=time_dim,
+            use_attention=False,
+        )
+
+        # Final projection back to RGB noise prediction
+        self.final_norm = nn.GroupNorm(8, base_channels)
+        self.final_act = nn.SiLU()
         self.final_conv = nn.Conv2d(base_channels, out_channels, kernel_size=1)
 
     def forward(self, x: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
@@ -332,36 +361,30 @@ class UNet(nn.Module):
         Returns:
             Predicted noise tensor of shape [B, C, H, W]
         """
-        # ------------------------------------------------------------------
-        # 1. Compute timestep embeddings
-        # ------------------------------------------------------------------
+        # Encode timestep information
         time_emb = self.time_embedding(timesteps)
 
-        # ------------------------------------------------------------------
-        # 2. Initial projection
-        # ------------------------------------------------------------------
+        # Initial image projection
         x = self.init_conv(x)
 
-        # ------------------------------------------------------------------
-        # 3. Encoder path
-        # ------------------------------------------------------------------
+        # Encoder
         x, skip1 = self.down1(x, time_emb)
         x, skip2 = self.down2(x, time_emb)
+        x, skip3 = self.down3(x, time_emb)
 
-        # ------------------------------------------------------------------
-        # 4. Bottleneck
-        # ------------------------------------------------------------------
+        # Bottleneck
         x = self.mid_block1(x, time_emb)
+        x = self.mid_attn(x)
         x = self.mid_block2(x, time_emb)
 
-        # ------------------------------------------------------------------
-        # 5. Decoder path
-        # ------------------------------------------------------------------
-        x = self.up1(x, skip2, time_emb)
-        x = self.up2(x, skip1, time_emb)
+        # Decoder
+        x = self.up1(x, skip3, time_emb)
+        x = self.up2(x, skip2, time_emb)
+        x = self.up3(x, skip1, time_emb)
 
-        # ------------------------------------------------------------------
-        # 6. Final output
-        # ------------------------------------------------------------------
+        # Final prediction
+        x = self.final_norm(x)
+        x = self.final_act(x)
         x = self.final_conv(x)
+
         return x
