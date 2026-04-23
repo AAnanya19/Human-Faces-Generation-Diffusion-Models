@@ -26,6 +26,7 @@ class ButterflyDataset(torch.utils.data.Dataset):
 def get_transforms(image_size=128):  
     return transforms.Compose([
         transforms.Resize((image_size, image_size)),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
     ])
