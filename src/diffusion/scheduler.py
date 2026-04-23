@@ -1,6 +1,6 @@
 # diffusion/scheduler.py
 """
-DDPM Scheduler (simple implementation)
+DDPM Scheduler
 
 This file:
 - Defines the noise schedule used in diffusion training and sampling

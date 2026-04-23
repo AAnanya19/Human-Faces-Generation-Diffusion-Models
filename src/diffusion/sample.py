@@ -11,15 +11,12 @@ This file:
 Reference:
 - The reverse denoising procedure follows DDPM:
   Ho et al., "Denoising Diffusion Probabilistic Models", 2020
-- The scheduler contains the actual reverse step 
-- This file focuses on the overall generation loop
+- The scheduler contains the reverse step 
 
 Note:
 - This implementation assumes:
     1. the model predicts noise epsilon_theta(x_t, t)
     2. the scheduler handles one reverse denoising step at a time
-- This is written for unconditional image generation
-
 
 Mathematical summary:
 Sampling starts from:
