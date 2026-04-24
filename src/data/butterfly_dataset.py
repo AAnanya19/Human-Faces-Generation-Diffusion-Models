@@ -1,5 +1,6 @@
 from data.dataloader import (
     ButterflyDataset,
+    FolderImageDataset,
     create_dataloaders,
     full_dataset,
     get_transforms,
@@ -7,6 +8,7 @@ from data.dataloader import (
 
 __all__ = [
     "ButterflyDataset",
+    "FolderImageDataset",
     "create_dataloaders",
     "full_dataset",
     "get_transforms",
