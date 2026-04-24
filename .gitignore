@@ -8,7 +8,9 @@ env/
 .env
 
 data/*
+!data/dataloader.py
 !data/README.md
+
 
 results/*
 !results/.gitkeep

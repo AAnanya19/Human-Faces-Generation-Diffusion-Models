@@ -1,0 +1,8 @@
+datasets==4.8.4
+huggingface_hub==1.7.2
+matplotlib==3.10.8
+numpy==1.26.4
+pandas==3.0.1
+torch==2.11.0
+torchvision==0.26.0
+tqdm
