@@ -10,6 +10,7 @@ env/
 data/*
 !data/dataloader.py
 !data/README.md
+!data/__init__.py
 
 
 results/*
@@ -18,6 +19,10 @@ results/*
 !results/butterflies/samples/
 !results/butterflies/loss_curves/
 !results/butterflies/eval/
+!results/celebahq/
+!results/celebahq/eval/
+
+.idea/
 
 checkpoints/
 *.pt
