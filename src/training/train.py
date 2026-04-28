@@ -78,6 +78,41 @@ def append_loss_log(save_dir: str, epoch: int, avg_loss: float) -> None:
         f.write(f"{epoch},{avg_loss:.8f}\n")
 
 
+def write_full_loss_log(save_dir: str, losses: list[float]) -> None:
+    log_path = Path(save_dir) / "loss_log.csv"
+    lines = ["epoch,avg_loss"] + [
+        f"{epoch},{loss:.8f}" for epoch, loss in enumerate(losses, start=1)
+    ]
+    log_path.write_text("\n".join(lines) + "\n")
+
+
+def load_resume_state(
+    checkpoint_path: str | None,
+    *,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    device: str,
+) -> tuple[int, list[float]]:
+    if checkpoint_path is None:
+        return 0, []
+
+    ckpt_path = Path(checkpoint_path)
+    if not ckpt_path.is_file():
+        raise FileNotFoundError(f"Resume checkpoint not found: {ckpt_path}")
+
+    checkpoint = torch.load(ckpt_path, map_location=device)
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+        if "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        start_epoch = checkpoint.get("epoch", 0)
+        loss_history = checkpoint.get("loss_history", [])
+        return start_epoch, list(loss_history)
+
+    model.load_state_dict(checkpoint)
+    return 0, []
+
+
 @torch.no_grad()
 def save_generated_samples(
     model: nn.Module,
@@ -179,6 +214,7 @@ def train(
     fixed_sample_seed: int = 123,
     fixed_trajectory_seed: int = 321,
     trajectory_save_every: int = 100,
+    resume_checkpoint: str | None = None,
 ):
     """
     Train the DDPM denoising model on the butterfly dataset.
@@ -260,6 +296,9 @@ def train(
         trajectory_save_every:
             Timestep interval for trajectory snapshots.
 
+        resume_checkpoint:
+            Optional path to a saved checkpoint to continue training from.
+
     Returns:
         model:
             Trained U-Net model
@@ -313,6 +352,7 @@ def train(
             "seed": fixed_trajectory_seed,
             "save_every": trajectory_save_every,
         },
+        "resume_checkpoint": resume_checkpoint,
     }
     write_run_metadata(save_dir, run_metadata)
 
@@ -362,14 +402,24 @@ def train(
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=lr, weight_decay=weight_decay)
 
-    losses = []
+    start_epoch, losses = load_resume_state(
+        resume_checkpoint,
+        model=model,
+        optimizer=optimizer,
+        device=device,
+    )
+    if losses:
+        write_full_loss_log(save_dir, losses)
+    run_metadata["resume_from_epoch"] = start_epoch
+    write_run_metadata(save_dir, run_metadata)
+
     sample_dir = Path(save_dir) / "generated_samples"
     trajectory_dir = Path(save_dir) / "trajectories"
 
     # --------------------------------------------------------------
     # 3. Training loop
     # --------------------------------------------------------------
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         model.train()
         running_loss = 0.0
 
@@ -421,7 +471,15 @@ def train(
         # ----------------------------------------------------------
         if checkpoint_every > 0 and (epoch + 1) % checkpoint_every == 0:
             checkpoint_path = os.path.join(save_dir, f"ddpm_epoch_{epoch + 1}.pth")
-            torch.save(model.state_dict(), checkpoint_path)
+            torch.save(
+                {
+                    "epoch": epoch + 1,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "loss_history": losses,
+                },
+                checkpoint_path,
+            )
 
         if sample_every > 0 and (epoch + 1) % sample_every == 0:
             save_generated_samples(
@@ -445,7 +503,15 @@ def train(
 
     # Save final model
     final_path = os.path.join(save_dir, "ddpm_final.pth")
-    torch.save(model.state_dict(), final_path)
+    torch.save(
+        {
+            "epoch": epochs,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "loss_history": losses,
+        },
+        final_path,
+    )
 
     run_metadata["loss_history"] = losses
     run_metadata["final_checkpoint"] = final_path
@@ -481,6 +547,7 @@ if __name__ == "__main__":
     parser.add_argument("--fixed_sample_seed", type=int, default=123)
     parser.add_argument("--fixed_trajectory_seed", type=int, default=321)
     parser.add_argument("--trajectory_save_every", type=int, default=100)
+    parser.add_argument("--resume_checkpoint", type=str, default=None)
     args = parser.parse_args()
 
     device = resolve_device(args.device)
@@ -513,6 +580,7 @@ if __name__ == "__main__":
         fixed_sample_seed=args.fixed_sample_seed,
         fixed_trajectory_seed=args.fixed_trajectory_seed,
         trajectory_save_every=args.trajectory_save_every,
+        resume_checkpoint=args.resume_checkpoint,
     )
 
     print("Training complete.")
