@@ -1,6 +1,4 @@
-# training/train.py
-"""
-DDPM Training Loop
+"""DDPM Training Loop
 
 This file:
 - Loads batches of clean images from the dataloader
