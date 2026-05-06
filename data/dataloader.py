@@ -76,12 +76,21 @@ def create_dataloaders(
     num_workers=0,
     folder_subset_size=None,
     folder_test_size=0,
+    return_split_info=False,
 ):
+    split_info = None
     transform = get_transforms(image_size=image_size)
     if dataset_source == "hf":
         data = full_dataset()
         train_dataset = ButterflyDataset(data, transform=transform)
         test_dataset = None
+        if return_split_info:
+            split_info = {
+                "dataset_source": "hf",
+                "dataset_name": "huggan/smithsonian_butterflies_subset",
+                "train_files": None,
+                "test_files": None,
+            }
     elif dataset_source == "folder":
         if dataset_path is None:
             raise ValueError(
@@ -121,6 +130,19 @@ def create_dataloaders(
             test_dataset = None
 
         train_dataset = Subset(full_folder_dataset, train_indices)
+        if return_split_info:
+            train_files = [str(full_folder_dataset.image_paths[idx]) for idx in train_indices]
+            test_files = (
+                [str(full_folder_dataset.image_paths[idx]) for idx in test_indices]
+                if folder_test_size > 0
+                else []
+            )
+            split_info = {
+                "dataset_source": "folder",
+                "dataset_path": str(Path(dataset_path)),
+                "train_files": train_files,
+                "test_files": test_files,
+            }
     else:
         raise ValueError("dataset_source must be either 'hf' or 'folder'")
 
@@ -131,6 +153,8 @@ def create_dataloaders(
         test_loader = DataLoader(
             test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
 
+    if return_split_info:
+        return train_loader, None, test_loader, split_info
     return train_loader, None, test_loader
 
 

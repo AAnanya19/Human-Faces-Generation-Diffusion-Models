@@ -36,7 +36,7 @@ import torchvision.utils as vutils  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
 from src.data.butterfly_dataset import create_dataloaders  # noqa: E402
-from src.diffusion.sample import sample  # noqa: E402
+from src.diffusion.sample import sample, sample_with_trajectory  # noqa: E402
 from src.diffusion.scheduler import DDPMScheduler  # noqa: E402
 from src.models.unet import UNet  # noqa: E402
 
@@ -56,6 +56,61 @@ def write_run_metadata(save_dir: str, metadata: dict) -> None:
     metadata_path.write_text(json.dumps(metadata, indent=2))
 
 
+def write_split_files(save_dir: str, split_info: dict | None) -> None:
+    if not split_info:
+        return
+    split_dir = Path(save_dir)
+    train_files = split_info.get("train_files")
+    test_files = split_info.get("test_files")
+    if train_files is not None:
+        (split_dir / "train_files.txt").write_text("\n".join(train_files) + "\n")
+    if test_files is not None:
+        (split_dir / "test_files.txt").write_text("\n".join(test_files) + "\n")
+
+
+def append_loss_log(save_dir: str, epoch: int, avg_loss: float) -> None:
+    log_path = Path(save_dir) / "loss_log.csv"
+    if not log_path.exists():
+        log_path.write_text("epoch,avg_loss\n")
+    with log_path.open("a") as f:
+        f.write(f"{epoch},{avg_loss:.8f}\n")
+
+
+def write_full_loss_log(save_dir: str, losses: list[float]) -> None:
+    log_path = Path(save_dir) / "loss_log.csv"
+    lines = ["epoch,avg_loss"] + [
+        f"{epoch},{loss:.8f}" for epoch, loss in enumerate(losses, start=1)
+    ]
+    log_path.write_text("\n".join(lines) + "\n")
+
+
+def load_resume_state(
+    checkpoint_path: str | None,
+    *,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    device: str,
+) -> tuple[int, list[float]]:
+    if checkpoint_path is None:
+        return 0, []
+
+    ckpt_path = Path(checkpoint_path)
+    if not ckpt_path.is_file():
+        raise FileNotFoundError(f"Resume checkpoint not found: {ckpt_path}")
+
+    checkpoint = torch.load(ckpt_path, map_location=device)
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
+        if "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        start_epoch = checkpoint.get("epoch", 0)
+        loss_history = checkpoint.get("loss_history", [])
+        return start_epoch, list(loss_history)
+
+    model.load_state_dict(checkpoint)
+    return 0, []
+
+
 @torch.no_grad()
 def save_generated_samples(
     model: nn.Module,
@@ -65,7 +120,20 @@ def save_generated_samples(
     device: str,
     save_path: Path,
     batch_size: int,
+    seed: int | None = None,
 ) -> None:
+    initial_noise = None
+    if seed is not None:
+        generator = torch.Generator(device=device)
+        generator.manual_seed(seed)
+        initial_noise = torch.randn(
+            batch_size,
+            3,
+            image_size,
+            image_size,
+            generator=generator,
+            device=device,
+        )
     images = sample(
         model,
         scheduler,
@@ -73,10 +141,49 @@ def save_generated_samples(
         batch_size=batch_size,
         channels=3,
         device=device,
+        initial_noise=initial_noise,
     )
     images = (images.clamp(-1, 1) + 1) * 0.5
     save_path.parent.mkdir(parents=True, exist_ok=True)
     vutils.save_image(images, save_path, nrow=min(4, batch_size))
+
+
+@torch.no_grad()
+def save_trajectory_samples(
+    model: nn.Module,
+    scheduler: DDPMScheduler,
+    *,
+    image_size: int,
+    device: str,
+    save_path: Path,
+    channels: int = 3,
+    seed: int = 0,
+    save_every: int = 100,
+) -> None:
+    generator = torch.Generator(device=device)
+    generator.manual_seed(seed)
+    initial_noise = torch.randn(1, channels, image_size, image_size, generator=generator, device=device)
+    _, trajectory = sample_with_trajectory(
+        model,
+        scheduler,
+        image_size=image_size,
+        batch_size=1,
+        channels=channels,
+        device=device,
+        save_every=save_every,
+        initial_noise=initial_noise,
+    )
+    frames = [((frame.clamp(-1, 1) + 1) * 0.5).cpu() for frame in trajectory]
+    grid = torch.cat(frames, dim=0)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    vutils.save_image(grid, save_path, nrow=len(frames))
+
+
+def parse_int_list(raw: str) -> tuple[int, ...]:
+    values = tuple(int(part.strip()) for part in raw.split(",") if part.strip())
+    if not values:
+        raise ValueError(f"Expected comma-separated integers, got: {raw!r}")
+    return values
 
 
 def train(
@@ -91,10 +198,21 @@ def train(
     grad_clip: float = 1.0,
     sample_every: int = 10,
     num_sample_images: int = 8,
+    checkpoint_every: int = 50,
     dataset_source: str = "hf",
     dataset_path: str | None = None,
     folder_subset_size: int | None = None,
     folder_test_size: int = 0,
+    base_channels: int = 64,
+    time_dim: int = 256,
+    channel_mults: tuple[int, ...] = (1, 2, 4, 8),
+    num_res_blocks: int = 2,
+    dropout: float = 0.1,
+    attention_resolutions: tuple[int, ...] = (16, 8),
+    fixed_sample_seed: int = 123,
+    fixed_trajectory_seed: int = 321,
+    trajectory_save_every: int = 100,
+    resume_checkpoint: str | None = None,
 ):
     """
     Train the DDPM denoising model on the butterfly dataset.
@@ -133,6 +251,9 @@ def train(
         num_sample_images:
             Number of generated images to include in each saved grid.
 
+        checkpoint_every:
+            Save model checkpoints every N epochs.
+
         dataset_source:
             Dataset backend. Use "hf" for the butterfly dataset or "folder" for
             a local image directory such as an unzipped Kaggle dataset.
@@ -145,6 +266,36 @@ def train(
 
         folder_test_size:
             Number of images reserved for the test split when using a folder dataset.
+
+        time_dim:
+            Timestep embedding size.
+
+        base_channels:
+            Base channel width for the U-Net.
+
+        channel_mults:
+            Per-resolution channel multipliers for the U-Net.
+
+        num_res_blocks:
+            Number of residual blocks per resolution.
+
+        dropout:
+            Dropout used inside residual blocks.
+
+        attention_resolutions:
+            Spatial resolutions where attention is applied.
+
+        fixed_sample_seed:
+            Seed for deterministic generated sample grids.
+
+        fixed_trajectory_seed:
+            Seed for deterministic denoising trajectory visualizations.
+
+        trajectory_save_every:
+            Timestep interval for trajectory snapshots.
+
+        resume_checkpoint:
+            Optional path to a saved checkpoint to continue training from.
 
     Returns:
         model:
@@ -174,33 +325,56 @@ def train(
         "model": {
             "in_channels": 3,
             "out_channels": 3,
-            "base_channels": 64,
-            "time_dim": 256,
+            "base_channels": base_channels,
+            "time_dim": time_dim,
+            "channel_mults": list(channel_mults),
+            "num_res_blocks": num_res_blocks,
+            "dropout": dropout,
+            "attention_resolutions": list(attention_resolutions),
         },
         "checkpoints": {
             "pattern": "ddpm_epoch_{epoch}.pth",
             "final": "ddpm_final.pth",
+            "checkpoint_every": checkpoint_every,
         },
         "samples": {
             "directory": "generated_samples",
             "pattern": "epoch_{epoch}.png",
             "sample_every": sample_every,
             "num_images": num_sample_images,
+            "fixed_sample_seed": fixed_sample_seed,
         },
+        "trajectories": {
+            "directory": "trajectories",
+            "pattern": "epoch_{epoch}.png",
+            "seed": fixed_trajectory_seed,
+            "save_every": trajectory_save_every,
+        },
+        "resume_checkpoint": resume_checkpoint,
     }
     write_run_metadata(save_dir, run_metadata)
 
     # --------------------------------------------------------------
     # 1. Load dataset
     # --------------------------------------------------------------
-    train_loader, _, _ = create_dataloaders(
+    train_loader, _, _, split_info = create_dataloaders(
         batch_size=batch_size,
         image_size=image_size,
         dataset_source=dataset_source,
         dataset_path=dataset_path,
         folder_subset_size=folder_subset_size,
         folder_test_size=folder_test_size,
+        return_split_info=True,
     )
+    write_split_files(save_dir, split_info)
+    run_metadata["dataset"]["train_split_file"] = "train_files.txt"
+    run_metadata["dataset"]["test_split_file"] = "test_files.txt"
+    if split_info is not None:
+        train_files = split_info.get("train_files")
+        test_files = split_info.get("test_files")
+        run_metadata["dataset"]["train_size"] = len(train_files) if train_files is not None else None
+        run_metadata["dataset"]["test_size"] = len(test_files) if test_files is not None else None
+    write_run_metadata(save_dir, run_metadata)
 
     # --------------------------------------------------------------
     # 2. Create model, scheduler, loss, optimizer
@@ -208,8 +382,13 @@ def train(
     model = UNet(
         in_channels=3,
         out_channels=3,
-        base_channels=64,
-        time_dim=256,
+        base_channels=base_channels,
+        time_dim=time_dim,
+        channel_mults=channel_mults,
+        num_res_blocks=num_res_blocks,
+        dropout=dropout,
+        attention_resolutions=attention_resolutions,
+        image_size=image_size,
     ).to(device)
 
     scheduler = DDPMScheduler(
@@ -221,13 +400,24 @@ def train(
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=lr, weight_decay=weight_decay)
 
-    losses = []
+    start_epoch, losses = load_resume_state(
+        resume_checkpoint,
+        model=model,
+        optimizer=optimizer,
+        device=device,
+    )
+    if losses:
+        write_full_loss_log(save_dir, losses)
+    run_metadata["resume_from_epoch"] = start_epoch
+    write_run_metadata(save_dir, run_metadata)
+
     sample_dir = Path(save_dir) / "generated_samples"
+    trajectory_dir = Path(save_dir) / "trajectories"
 
     # --------------------------------------------------------------
     # 3. Training loop
     # --------------------------------------------------------------
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         model.train()
         running_loss = 0.0
 
@@ -270,14 +460,24 @@ def train(
 
         avg_loss = running_loss / len(train_loader)
         losses.append(avg_loss)
+        append_loss_log(save_dir, epoch + 1, avg_loss)
 
         print(f"Epoch [{epoch + 1}/{epochs}] - Avg Loss: {avg_loss:.6f}")
 
         # ----------------------------------------------------------
         # 4. Save checkpoint after each epoch
         # ----------------------------------------------------------
-        checkpoint_path = os.path.join(save_dir, f"ddpm_epoch_{epoch + 1}.pth")
-        torch.save(model.state_dict(), checkpoint_path)
+        if checkpoint_every > 0 and (epoch + 1) % checkpoint_every == 0:
+            checkpoint_path = os.path.join(save_dir, f"ddpm_epoch_{epoch + 1}.pth")
+            torch.save(
+                {
+                    "epoch": epoch + 1,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "loss_history": losses,
+                },
+                checkpoint_path,
+            )
 
         if sample_every > 0 and (epoch + 1) % sample_every == 0:
             save_generated_samples(
@@ -287,11 +487,29 @@ def train(
                 device=device,
                 save_path=sample_dir / f"epoch_{epoch + 1}.png",
                 batch_size=num_sample_images,
+                seed=fixed_sample_seed,
+            )
+            save_trajectory_samples(
+                model,
+                scheduler,
+                image_size=image_size,
+                device=device,
+                save_path=trajectory_dir / f"epoch_{epoch + 1}.png",
+                seed=fixed_trajectory_seed,
+                save_every=trajectory_save_every,
             )
 
     # Save final model
     final_path = os.path.join(save_dir, "ddpm_final.pth")
-    torch.save(model.state_dict(), final_path)
+    torch.save(
+        {
+            "epoch": epochs,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "loss_history": losses,
+        },
+        final_path,
+    )
 
     run_metadata["loss_history"] = losses
     run_metadata["final_checkpoint"] = final_path
@@ -313,10 +531,21 @@ if __name__ == "__main__":
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--sample_every", type=int, default=10)
     parser.add_argument("--num_sample_images", type=int, default=8)
+    parser.add_argument("--checkpoint_every", type=int, default=25)
     parser.add_argument("--dataset_source", type=str, default="hf")
     parser.add_argument("--dataset_path", type=str, default=None)
     parser.add_argument("--folder_subset_size", type=int, default=None)
     parser.add_argument("--folder_test_size", type=int, default=0)
+    parser.add_argument("--base_channels", type=int, default=64)
+    parser.add_argument("--time_dim", type=int, default=256)
+    parser.add_argument("--channel_mults", type=str, default="1,2,4,8")
+    parser.add_argument("--num_res_blocks", type=int, default=2)
+    parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--attention_resolutions", type=str, default="16,8")
+    parser.add_argument("--fixed_sample_seed", type=int, default=123)
+    parser.add_argument("--fixed_trajectory_seed", type=int, default=321)
+    parser.add_argument("--trajectory_save_every", type=int, default=100)
+    parser.add_argument("--resume_checkpoint", type=str, default=None)
     args = parser.parse_args()
 
     device = resolve_device(args.device)
@@ -335,10 +564,21 @@ if __name__ == "__main__":
         grad_clip=args.grad_clip,
         sample_every=args.sample_every,
         num_sample_images=args.num_sample_images,
+        checkpoint_every=args.checkpoint_every,
         dataset_source=args.dataset_source,
         dataset_path=args.dataset_path,
         folder_subset_size=args.folder_subset_size,
         folder_test_size=args.folder_test_size,
+        base_channels=args.base_channels,
+        time_dim=args.time_dim,
+        channel_mults=parse_int_list(args.channel_mults),
+        num_res_blocks=args.num_res_blocks,
+        dropout=args.dropout,
+        attention_resolutions=parse_int_list(args.attention_resolutions),
+        fixed_sample_seed=args.fixed_sample_seed,
+        fixed_trajectory_seed=args.fixed_trajectory_seed,
+        trajectory_save_every=args.trajectory_save_every,
+        resume_checkpoint=args.resume_checkpoint,
     )
 
     print("Training complete.")

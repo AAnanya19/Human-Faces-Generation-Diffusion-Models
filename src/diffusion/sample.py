@@ -41,6 +41,7 @@ def sample(
     batch_size: int,
     channels: int = 3,
     device: str = "cpu",
+    initial_noise: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Generate a batch of images using the full reverse diffusion process.
@@ -84,7 +85,10 @@ def sample(
     # ------------------------------------------------------------------
     # x_T in the diffusion process.
     # At this point there is no image structure, only random noise.
-    x_t = torch.randn(batch_size, channels, image_size, image_size, device=device)
+    if initial_noise is None:
+        x_t = torch.randn(batch_size, channels, image_size, image_size, device=device)
+    else:
+        x_t = initial_noise.to(device)
 
     # 2. Reverse diffusion loop
     # ------------------------------------------------------------------
@@ -119,6 +123,7 @@ def sample_with_trajectory(
     channels: int = 3,
     device: str = "cpu",
     save_every: int = 100,
+    initial_noise: torch.Tensor | None = None,
 ):
     """
     Generate images while also storing intermediate denoising states.
@@ -158,7 +163,10 @@ def sample_with_trajectory(
     model.eval()
 
     # Start from pure Gaussian noise x_T
-    x_t = torch.randn(batch_size, channels, image_size, image_size, device=device)
+    if initial_noise is None:
+        x_t = torch.randn(batch_size, channels, image_size, image_size, device=device)
+    else:
+        x_t = initial_noise.to(device)
 
     # Store the initial noise as the first point in the trajectory
     trajectory = [x_t.detach().cpu()]
