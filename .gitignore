@@ -11,6 +11,8 @@ data/*
 !data/dataloader.py
 !data/README.md
 
+runs/
+
 
 results/*
 !results/.gitkeep

@@ -116,6 +116,51 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
+## Local CelebA-HQ Training
+
+The Colab notebook still works as before. To run the same CelebA-HQ folder
+training workflow locally, keep the dataset and run outputs inside the repo:
+
+```text
+data/celeba_hq_256/      # local images, ignored by Git
+runs/ddpm_runs/<run>/    # local checkpoints, samples, logs, ignored by Git
+```
+
+You can also place `data/celeba_hq_256.zip` in the repo and let the launcher
+extract it.
+
+Run from the project root:
+
+```bash
+python3 scripts/train_celebahq_local.py
+```
+
+This uses the same default settings as `notebooks/colab_celebahq_train.ipynb`:
+300 epochs, batch size 16, 64×64 training images, 1000 DDPM timesteps, 3000
+folder images with 300 held out, samples every 10 epochs, and checkpoints every
+25 epochs.
+
+Useful local options:
+
+```bash
+# Use a specific local folder
+python3 scripts/train_celebahq_local.py --dataset_dir /path/to/celeba_hq_256
+
+# Extract a local zip first
+python3 scripts/train_celebahq_local.py --dataset_zip /path/to/celeba_hq_256.zip
+
+# Pick a new run folder
+python3 scripts/train_celebahq_local.py --run_name celebahq_mps_test
+
+# Resume a local run
+python3 scripts/train_celebahq_local.py \
+  --resume_checkpoint runs/ddpm_runs/celebahq_run_001/ddpm_epoch_25.pth
+```
+
+The launcher auto-selects `cuda` first, then Apple `mps`, then CPU. CPU training
+is blocked by default because it is extremely slow; pass `--allow_cpu` only for
+debugging.
+
 ## Workflow
 
 - Create a separate branch for each task or feature

@@ -84,6 +84,20 @@ def write_full_loss_log(save_dir: str, losses: list[float]) -> None:
     log_path.write_text("\n".join(lines) + "\n")
 
 
+def make_seeded_noise(
+    shape: tuple[int, ...],
+    *,
+    device: str,
+    seed: int,
+) -> torch.Tensor:
+    device_type = torch.device(device).type
+    generator_device = "cpu" if device_type == "mps" else device
+    generator = torch.Generator(device=generator_device)
+    generator.manual_seed(seed)
+    noise = torch.randn(shape, generator=generator, device=generator_device)
+    return noise.to(device)
+
+
 def load_resume_state(
     checkpoint_path: str | None,
     *,
@@ -124,15 +138,10 @@ def save_generated_samples(
 ) -> None:
     initial_noise = None
     if seed is not None:
-        generator = torch.Generator(device=device)
-        generator.manual_seed(seed)
-        initial_noise = torch.randn(
-            batch_size,
-            3,
-            image_size,
-            image_size,
-            generator=generator,
+        initial_noise = make_seeded_noise(
+            (batch_size, 3, image_size, image_size),
             device=device,
+            seed=seed,
         )
     images = sample(
         model,
@@ -160,9 +169,11 @@ def save_trajectory_samples(
     seed: int = 0,
     save_every: int = 100,
 ) -> None:
-    generator = torch.Generator(device=device)
-    generator.manual_seed(seed)
-    initial_noise = torch.randn(1, channels, image_size, image_size, generator=generator, device=device)
+    initial_noise = make_seeded_noise(
+        (1, channels, image_size, image_size),
+        device=device,
+        seed=seed,
+    )
     _, trajectory = sample_with_trajectory(
         model,
         scheduler,
@@ -203,6 +214,7 @@ def train(
     dataset_path: str | None = None,
     folder_subset_size: int | None = None,
     folder_test_size: int = 0,
+    num_workers: int = 0,
     base_channels: int = 64,
     time_dim: int = 256,
     channel_mults: tuple[int, ...] = (1, 2, 4, 8),
@@ -267,6 +279,9 @@ def train(
         folder_test_size:
             Number of images reserved for the test split when using a folder dataset.
 
+        num_workers:
+            Number of dataloader worker processes.
+
         time_dim:
             Timestep embedding size.
 
@@ -321,6 +336,7 @@ def train(
             "path": dataset_path,
             "folder_subset_size": folder_subset_size,
             "folder_test_size": folder_test_size,
+            "num_workers": num_workers,
         },
         "model": {
             "in_channels": 3,
@@ -364,6 +380,7 @@ def train(
         dataset_path=dataset_path,
         folder_subset_size=folder_subset_size,
         folder_test_size=folder_test_size,
+        num_workers=num_workers,
         return_split_info=True,
     )
     write_split_files(save_dir, split_info)
@@ -536,6 +553,7 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_path", type=str, default=None)
     parser.add_argument("--folder_subset_size", type=int, default=None)
     parser.add_argument("--folder_test_size", type=int, default=0)
+    parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--base_channels", type=int, default=64)
     parser.add_argument("--time_dim", type=int, default=256)
     parser.add_argument("--channel_mults", type=str, default="1,2,4,8")
@@ -569,6 +587,7 @@ if __name__ == "__main__":
         dataset_path=args.dataset_path,
         folder_subset_size=args.folder_subset_size,
         folder_test_size=args.folder_test_size,
+        num_workers=args.num_workers,
         base_channels=args.base_channels,
         time_dim=args.time_dim,
         channel_mults=parse_int_list(args.channel_mults),

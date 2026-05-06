@@ -1,10 +1,8 @@
-from datasets import load_dataset
 from pathlib import Path
 from PIL import Image
 import torch
 from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
-import matplotlib.pyplot as plt
 
 
 class ButterflyDataset(torch.utils.data.Dataset):
@@ -61,6 +59,8 @@ def get_transforms(image_size=128):
 
 
 def full_dataset():
+    from datasets import load_dataset
+
     return load_dataset("huggan/smithsonian_butterflies_subset")["train"]
 
 
