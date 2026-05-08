@@ -155,8 +155,8 @@ python3 scripts/train_celebahq_local.py --run_name celebahq_mps_test
 python3 scripts/train_celebahq_local.py --lr_scheduler cosine
 python3 scripts/train_celebahq_local.py --lr_scheduler fixed
 
-# Toggle EMA. It is off by default for clean baseline comparisons.
-python3 scripts/train_celebahq_local.py --use_ema
+# Toggle EMA by editing USE_EMA = True/False in scripts/train_celebahq_local.py
+python3 scripts/train_celebahq_local.py
 
 # Change FID early-stopping patience
 python3 scripts/train_celebahq_local.py --fid_patience 6

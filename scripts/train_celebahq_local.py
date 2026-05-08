@@ -20,6 +20,19 @@ from src.training.train import resolve_device, train  # noqa: E402
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
+def parse_bool(value: str | bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "y", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(
+        "Expected a boolean value: true/false, yes/no, 1/0, or on/off."
+    )
+
+
 def resolve_project_path(path: str | Path) -> Path:
     resolved = Path(path).expanduser()
     if not resolved.is_absolute():
@@ -123,8 +136,7 @@ def parse_args() -> argparse.Namespace:
     training.add_argument("--weight_decay", type=float, default=1e-4)
     training.add_argument("--grad_clip", type=float, default=1.0)
     training.add_argument("--checkpoint_every", type=int, default=50)
-    # EMA is opt-in so baseline runs stay directly comparable unless enabled.
-    training.add_argument("--use_ema", action="store_true")
+    training.add_argument("--use_ema", type=parse_bool, nargs="?", const=True, default=False)
     training.add_argument("--ema_decay", type=float, default=0.9999)
     training.add_argument("--resume_checkpoint", type=str, default=None)
     training.add_argument("--device", type=str, default=None)
