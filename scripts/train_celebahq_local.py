@@ -66,11 +66,9 @@ def prepare_dataset(
     expected_image_count: int,
 ) -> int:
     image_count = count_images(dataset_dir)
-    if expected_image_count <= 0 and image_count > 0:
+    if image_count > 0:
         return image_count
-    if image_count >= expected_image_count:
-        return image_count
-
+    
     if dataset_zip is not None and dataset_zip.is_file():
         print(f"Extracting dataset zip: {dataset_zip}")
         extract_dataset_zip(dataset_zip, dataset_dir)
@@ -80,13 +78,6 @@ def prepare_dataset(
         raise FileNotFoundError(
             f"No images found in {dataset_dir}. Put CelebA-HQ there, or pass "
             "--dataset_zip data/celeba_hq_256.zip to extract it locally."
-        )
-    if expected_image_count > 0 and image_count < expected_image_count:
-        raise RuntimeError(
-            f"Dataset looks incomplete: found {image_count} images in "
-            f"{dataset_dir}, expected about {expected_image_count}. If you are "
-            "intentionally training on a smaller local copy, pass "
-            "--expected_image_count 0."
         )
     return image_count
 
@@ -102,7 +93,7 @@ def parse_args() -> argparse.Namespace:
     local.add_argument("--dataset_dir", type=str, default="data/celeba_hq_256")
     local.add_argument("--dataset_zip", type=str, default="data/celeba_hq_256.zip")
     local.add_argument("--expected_image_count", type=int, default=30000)
-    local.add_argument("--run_name", type=str, default="celebahq_run_001")
+    local.add_argument("--run_name", type=str, default="celebahq_run_001_baseline")
     local.add_argument("--runs_root", type=str, default="runs/ddpm_runs")
     local.add_argument("--save_dir", type=str, default=None)
     local.add_argument("--allow_cpu", action="store_true")
@@ -113,20 +104,20 @@ def parse_args() -> argparse.Namespace:
 
     # Model params
     model = parser.add_argument_group("Model params")
-    model.add_argument("--image_size", type=int, default=64)
+    model.add_argument("--image_size", type=int, default=128)
     model.add_argument("--base_channels", type=int, default=64)
     model.add_argument("--time_dim", type=int, default=256)
-    model.add_argument("--channel_mults", type=str, default="1,2,4,8")
+    model.add_argument("--channel_mults", type=str, default="1,2,2,4,4")
     model.add_argument("--num_res_blocks", type=int, default=2)
     model.add_argument("--dropout", type=float, default=0.1)
     model.add_argument("--attention_resolutions", type=str, default="16,8")
 
     # Training params
     training = parser.add_argument_group("Training params")
-    training.add_argument("--epochs", type=int, default=300)
-    training.add_argument("--batch_size", type=int, default=16)
+    training.add_argument("--epochs", type=int, default=1000)
+    training.add_argument("--batch_size", type=int, default=8)
     training.add_argument("--lr", type=float, default=1e-4)
-    training.add_argument("--lr_scheduler", choices=["fixed", "cosine"], default="cosine")
+    training.add_argument("--lr_scheduler", choices=["fixed", "cosine"], default="fixed")
     training.add_argument("--cosine_t_max", type=int, default=None)
     training.add_argument("--cosine_eta_min", type=float, default=1e-6)
     training.add_argument("--weight_decay", type=float, default=1e-4)
@@ -139,20 +130,20 @@ def parse_args() -> argparse.Namespace:
     data = parser.add_argument_group("Split and dataloader params")
     data.add_argument("--folder_subset_size", type=int, default=3000)
     data.add_argument("--folder_test_size", type=int, default=300)
-    data.add_argument("--split_seed", type=int, default=42)
-    data.add_argument("--num_workers", type=int, default=0)
+    data.add_argument("--split_seed", type=int, default=67)
+    data.add_argument("--num_workers", type=int, default=8)
 
     # Evaluation params
     evaluation = parser.add_argument_group("Evaluation params")
-    evaluation.add_argument("--sample_every", type=int, default=10)
+    evaluation.add_argument("--sample_every", type=int, default=50)
     evaluation.add_argument("--num_sample_images", type=int, default=8)
     evaluation.add_argument("--fixed_sample_seed", type=int, default=123)
     evaluation.add_argument("--fixed_trajectory_seed", type=int, default=321)
     evaluation.add_argument("--trajectory_save_every", type=int, default=100)
     evaluation.add_argument("--disable_fid", action="store_true")
-    evaluation.add_argument("--fid_every", type=int, default=50)
+    evaluation.add_argument("--fid_every", type=int, default=100)
     evaluation.add_argument("--fid_num_images", type=int, default=300)
-    evaluation.add_argument("--fid_batch_size", type=int, default=16)
+    evaluation.add_argument("--fid_batch_size", type=int, default=8)
     evaluation.add_argument("--fid_seed", type=int, default=999)
     evaluation.add_argument("--fid_patience", type=int, default=4)
     evaluation.add_argument("--fid_device", type=str, default=None)
