@@ -1,12 +1,4 @@
-"""
-Local CelebA-HQ training launcher.
-
-This mirrors notebooks/colab_celebahq_train.ipynb, but keeps the dataset,
-checkpoints, samples, trajectories, logs, and metadata on your local machine.
-
-Example:
-    python3 scripts/train_celebahq_local.py --dataset_dir data/celeba_hq_256
-"""
+"""Local CelebA-HQ training launcher."""
 
 from __future__ import annotations
 
@@ -100,39 +92,71 @@ def prepare_dataset(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_dir", type=str, default="data/celeba_hq_256")
-    parser.add_argument("--dataset_zip", type=str, default="data/celeba_hq_256.zip")
-    parser.add_argument("--expected_image_count", type=int, default=30000)
-    parser.add_argument("--run_name", type=str, default="celebahq_run_001")
-    parser.add_argument("--runs_root", type=str, default="runs/ddpm_runs")
-    parser.add_argument("--save_dir", type=str, default=None)
-    parser.add_argument("--allow_cpu", action="store_true")
+    parser = argparse.ArgumentParser(
+        description="Run CelebA-HQ DDPM training locally.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
 
-    parser.add_argument("--epochs", type=int, default=300)
-    parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--image_size", type=int, default=64)
-    parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--timesteps", type=int, default=1000)
-    parser.add_argument("--weight_decay", type=float, default=1e-4)
-    parser.add_argument("--grad_clip", type=float, default=1.0)
-    parser.add_argument("--sample_every", type=int, default=10)
-    parser.add_argument("--num_sample_images", type=int, default=8)
-    parser.add_argument("--checkpoint_every", type=int, default=25)
-    parser.add_argument("--folder_subset_size", type=int, default=3000)
-    parser.add_argument("--folder_test_size", type=int, default=300)
-    parser.add_argument("--num_workers", type=int, default=0)
-    parser.add_argument("--base_channels", type=int, default=64)
-    parser.add_argument("--time_dim", type=int, default=256)
-    parser.add_argument("--channel_mults", type=str, default="1,2,4,8")
-    parser.add_argument("--num_res_blocks", type=int, default=2)
-    parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--attention_resolutions", type=str, default="16,8")
-    parser.add_argument("--fixed_sample_seed", type=int, default=123)
-    parser.add_argument("--fixed_trajectory_seed", type=int, default=321)
-    parser.add_argument("--trajectory_save_every", type=int, default=100)
-    parser.add_argument("--resume_checkpoint", type=str, default=None)
-    parser.add_argument("--device", type=str, default=None)
+    # Local paths and dataset
+    local = parser.add_argument_group("Local paths and dataset")
+    local.add_argument("--dataset_dir", type=str, default="data/celeba_hq_256")
+    local.add_argument("--dataset_zip", type=str, default="data/celeba_hq_256.zip")
+    local.add_argument("--expected_image_count", type=int, default=30000)
+    local.add_argument("--run_name", type=str, default="celebahq_run_001")
+    local.add_argument("--runs_root", type=str, default="runs/ddpm_runs")
+    local.add_argument("--save_dir", type=str, default=None)
+    local.add_argument("--allow_cpu", action="store_true")
+
+    # Diffusion params
+    diffusion = parser.add_argument_group("Diffusion params")
+    diffusion.add_argument("--timesteps", type=int, default=1000)
+
+    # Model params
+    model = parser.add_argument_group("Model params")
+    model.add_argument("--image_size", type=int, default=64)
+    model.add_argument("--base_channels", type=int, default=64)
+    model.add_argument("--time_dim", type=int, default=256)
+    model.add_argument("--channel_mults", type=str, default="1,2,4,8")
+    model.add_argument("--num_res_blocks", type=int, default=2)
+    model.add_argument("--dropout", type=float, default=0.1)
+    model.add_argument("--attention_resolutions", type=str, default="16,8")
+
+    # Training params
+    training = parser.add_argument_group("Training params")
+    training.add_argument("--epochs", type=int, default=300)
+    training.add_argument("--batch_size", type=int, default=16)
+    training.add_argument("--lr", type=float, default=1e-4)
+    training.add_argument("--lr_scheduler", choices=["fixed", "cosine"], default="cosine")
+    training.add_argument("--cosine_t_max", type=int, default=None)
+    training.add_argument("--cosine_eta_min", type=float, default=1e-6)
+    training.add_argument("--weight_decay", type=float, default=1e-4)
+    training.add_argument("--grad_clip", type=float, default=1.0)
+    training.add_argument("--checkpoint_every", type=int, default=50)
+    training.add_argument("--resume_checkpoint", type=str, default=None)
+    training.add_argument("--device", type=str, default=None)
+
+    # Split and dataloader params
+    data = parser.add_argument_group("Split and dataloader params")
+    data.add_argument("--folder_subset_size", type=int, default=3000)
+    data.add_argument("--folder_test_size", type=int, default=300)
+    data.add_argument("--split_seed", type=int, default=42)
+    data.add_argument("--num_workers", type=int, default=0)
+
+    # Evaluation params
+    evaluation = parser.add_argument_group("Evaluation params")
+    evaluation.add_argument("--sample_every", type=int, default=10)
+    evaluation.add_argument("--num_sample_images", type=int, default=8)
+    evaluation.add_argument("--fixed_sample_seed", type=int, default=123)
+    evaluation.add_argument("--fixed_trajectory_seed", type=int, default=321)
+    evaluation.add_argument("--trajectory_save_every", type=int, default=100)
+    evaluation.add_argument("--disable_fid", action="store_true")
+    evaluation.add_argument("--fid_every", type=int, default=50)
+    evaluation.add_argument("--fid_num_images", type=int, default=300)
+    evaluation.add_argument("--fid_batch_size", type=int, default=16)
+    evaluation.add_argument("--fid_seed", type=int, default=999)
+    evaluation.add_argument("--fid_patience", type=int, default=4)
+    evaluation.add_argument("--fid_device", type=str, default=None)
+    evaluation.add_argument("--no_save_fid_images", action="store_true")
     return parser.parse_args()
 
 
@@ -171,23 +195,10 @@ def main() -> None:
     print("device:", device)
 
     train(
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        image_size=args.image_size,
-        lr=args.lr,
+        # Diffusion params
         timesteps=args.timesteps,
-        device=device,
-        save_dir=str(save_dir),
-        weight_decay=args.weight_decay,
-        grad_clip=args.grad_clip,
-        sample_every=args.sample_every,
-        num_sample_images=args.num_sample_images,
-        checkpoint_every=args.checkpoint_every,
-        dataset_source="folder",
-        dataset_path=str(dataset_dir),
-        folder_subset_size=args.folder_subset_size,
-        folder_test_size=args.folder_test_size,
-        num_workers=args.num_workers,
+        # Model params
+        image_size=args.image_size,
         base_channels=args.base_channels,
         time_dim=args.time_dim,
         channel_mults=tuple(int(x) for x in args.channel_mults.split(",")),
@@ -196,16 +207,50 @@ def main() -> None:
         attention_resolutions=tuple(
             int(x) for x in args.attention_resolutions.split(",")
         ),
+        # Training params
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        device=device,
+        save_dir=str(save_dir),
+        lr_scheduler=args.lr_scheduler,
+        cosine_t_max=args.cosine_t_max,
+        cosine_eta_min=args.cosine_eta_min,
+        weight_decay=args.weight_decay,
+        grad_clip=args.grad_clip,
+        checkpoint_every=args.checkpoint_every,
+        resume_checkpoint=args.resume_checkpoint,
+        # Split and dataloader params
+        dataset_source="folder",
+        dataset_path=str(dataset_dir),
+        folder_subset_size=args.folder_subset_size,
+        folder_test_size=args.folder_test_size,
+        split_seed=args.split_seed,
+        num_workers=args.num_workers,
+        # Evaluation params
+        sample_every=args.sample_every,
+        num_sample_images=args.num_sample_images,
         fixed_sample_seed=args.fixed_sample_seed,
         fixed_trajectory_seed=args.fixed_trajectory_seed,
         trajectory_save_every=args.trajectory_save_every,
-        resume_checkpoint=args.resume_checkpoint,
+        enable_fid=not args.disable_fid,
+        fid_every=args.fid_every,
+        fid_num_images=args.fid_num_images,
+        fid_batch_size=args.fid_batch_size,
+        fid_seed=args.fid_seed,
+        fid_patience=args.fid_patience,
+        fid_device=args.fid_device,
+        save_fid_images=not args.no_save_fid_images,
     )
 
     print("Training complete.")
     print("Checkpoints:", save_dir)
+    print("Best model:", save_dir / "best_model.pth")
+    print("Latest checkpoint:", save_dir / "latest_checkpoint.pth")
     print("Samples:", save_dir / "generated_samples")
     print("Trajectories:", save_dir / "trajectories")
+    print("FID log:", save_dir / "fid_log.csv")
+    print("Training log:", save_dir / "training_log.csv")
     print("Loss log:", save_dir / "loss_log.csv")
     print("Metadata:", save_dir / "run_config.json")
 

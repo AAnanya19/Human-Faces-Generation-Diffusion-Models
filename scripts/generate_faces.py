@@ -1,28 +1,14 @@
 """
-Load a trained U-Net checkpoint and write individual generated face images.
+Generate CelebA-HQ face samples from a trained DDPM checkpoint.
 
-Example (from project root):
-    python3.10 scripts/generate_faces.py --checkpoint checkpoints/ddpm_faces_final.pth
-
-    # Generate 300 images (required for FID evaluation):
-    python scripts/generate_faces.py \
-        --checkpoint checkpoints/ddpm_faces_final.pth \
-        --num_images 300 \
-        --batch_size 16 \
-        --image_size 256
-
-    # Quick smoke-test on CPU (small config):
-    python scripts/generate_faces.py \
-        --checkpoint checkpoints/ddpm_faces_final.pth \
-        --num_images 4 \
-        --image_size 64 \
-        --timesteps 200 \
-        --device cpu
+The script can read the model/diffusion parameters saved inside checkpoints
+from src/training/train.py. CLI values override checkpoint values when passed.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 from pathlib import Path
@@ -30,47 +16,16 @@ from pathlib import Path
 import torch
 import torchvision.utils as vutils
 
-# ---------------------------------------------------------------------------
-# Make sure the project root is on sys.path so src.* imports work whether
-# this script is called from the root or from scripts/.
-# ---------------------------------------------------------------------------
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from src.diffusion.sample import sample        # noqa: E402
+from src.diffusion.sample import sample  # noqa: E402
 from src.diffusion.scheduler import DDPMScheduler  # noqa: E402
-from src.models.unet import UNet              # noqa: E402
+from src.models.unet import UNet  # noqa: E402
 
-
-# ---------------------------------------------------------------------------
-# Suggested U-Net config for CelebA-HQ 256x256
-# ---------------------------------------------------------------------------
-# base_channels=128  → doubles feature maps vs butterfly (64×64) model;
-#                      handles the 16× larger spatial resolution well.
-# time_dim=512       → richer sinusoidal time embedding; helps the model
-#                      distinguish fine-grained noise levels across T=1000.
-# At least 4 down-sampling levels are expected inside UNet so that the
-# bottleneck sees an 8×8 or 16×16 feature map — large enough receptive field
-# to model global face structure (symmetry, pose).
-# Attention at 16×16 and 8×8 resolutions is strongly recommended inside UNet
-# for facial coherence (eyes, alignment).  These are controlled inside
-# src/models/unet.py; default args here match that expectation.
-# ---------------------------------------------------------------------------
-DEFAULT_BASE_CHANNELS = 128
-DEFAULT_TIME_DIM = 512
-DEFAULT_IMAGE_SIZE = 256
-DEFAULT_TIMESTEPS = 1000
-DEFAULT_BATCH_SIZE = 16
-DEFAULT_NUM_IMAGES = 300
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def resolve_device(requested: str | None) -> str:
-    """Return a concrete device string, preferring CUDA then MPS then CPU."""
     if requested:
         return requested
     if torch.cuda.is_available():
@@ -80,240 +35,271 @@ def resolve_device(requested: str | None) -> str:
     return "cpu"
 
 
-def build_model(base_channels: int, time_dim: int, device: str) -> UNet:
-    """Instantiate U-Net with the recommended face-generation config."""
-    model = UNet(
-        in_channels=3,
-        out_channels=3,
+def parse_int_list(raw: str | None, default: tuple[int, ...]) -> tuple[int, ...]:
+    if raw is None:
+        return default
+    values = tuple(int(part.strip()) for part in raw.split(",") if part.strip())
+    if not values:
+        raise ValueError(f"Expected comma-separated integers, got: {raw!r}")
+    return values
+
+
+def resolve_project_path(path: str | Path) -> Path:
+    resolved = Path(path).expanduser()
+    if not resolved.is_absolute():
+        resolved = _ROOT / resolved
+    return resolved
+
+
+def safe_torch_load(path: Path, device: str):
+    try:
+        return torch.load(path, map_location=device, weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location=device)
+
+
+def load_checkpoint_payload(ckpt_path: Path, device: str) -> tuple[dict, dict]:
+    payload = safe_torch_load(ckpt_path, device)
+    if isinstance(payload, dict) and "model_state_dict" in payload:
+        return payload["model_state_dict"], payload
+    return payload, {}
+
+
+def config_from_checkpoint(checkpoint: dict) -> tuple[dict, dict]:
+    model_config = dict(checkpoint.get("model_config") or {})
+    diffusion_config = dict(checkpoint.get("diffusion_config") or {})
+    run_config = checkpoint.get("run_config") or {}
+    model_config.update(run_config.get("model", {}))
+    diffusion_config.update(run_config.get("diffusion", {}))
+    return model_config, diffusion_config
+
+
+def make_seeded_noise(
+    shape: tuple[int, ...],
+    *,
+    device: str,
+    seed: int,
+) -> torch.Tensor:
+    device_type = torch.device(device).type
+    generator_device = "cpu" if device_type == "mps" else device
+    generator = torch.Generator(device=generator_device)
+    generator.manual_seed(seed)
+    noise = torch.randn(shape, generator=generator, device=generator_device)
+    return noise.to(device)
+
+
+def build_model_from_config(
+    *,
+    model_config: dict,
+    image_size: int,
+    base_channels: int,
+    time_dim: int,
+    channel_mults: tuple[int, ...],
+    num_res_blocks: int,
+    dropout: float,
+    attention_resolutions: tuple[int, ...],
+    device: str,
+) -> UNet:
+    return UNet(
+        in_channels=int(model_config.get("in_channels", 3)),
+        out_channels=int(model_config.get("out_channels", 3)),
         base_channels=base_channels,
         time_dim=time_dim,
+        channel_mults=channel_mults,
+        num_res_blocks=num_res_blocks,
+        dropout=dropout,
+        attention_resolutions=attention_resolutions,
+        image_size=image_size,
     ).to(device)
-    return model
 
 
-def load_checkpoint(model: UNet, ckpt_path: Path, device: str) -> None:
-    """Load a state-dict-only checkpoint saved by train.py."""
-    state = torch.load(ckpt_path, map_location=device, weights_only=True)
-    model.load_state_dict(state)
-    model.eval()
-
-
+@torch.no_grad()
 def generate_in_batches(
     model: UNet,
     scheduler: DDPMScheduler,
+    *,
     num_images: int,
     batch_size: int,
     image_size: int,
     device: str,
+    seed: int | None,
 ) -> list[torch.Tensor]:
-    """
-    Run the reverse diffusion process in batches and collect results.
-
-    Returns a list of image tensors (values in [0, 1]) each of shape
-    (B, 3, image_size, image_size).
-    """
     batches: list[torch.Tensor] = []
     remaining = num_images
-
+    batch_index = 0
     while remaining > 0:
         current_batch = min(batch_size, remaining)
-        imgs = sample(
+        initial_noise = None
+        if seed is not None:
+            initial_noise = make_seeded_noise(
+                (current_batch, 3, image_size, image_size),
+                device=device,
+                seed=seed + batch_index,
+            )
+        images = sample(
             model,
             scheduler,
             image_size=image_size,
             batch_size=current_batch,
             channels=3,
             device=device,
+            initial_noise=initial_noise,
         )
-        # Rescale from [-1, 1] → [0, 1]
-        imgs = (imgs.clamp(-1, 1) + 1) * 0.5
-        batches.append(imgs.cpu())
+        images = (images.clamp(-1, 1) + 1) * 0.5
+        batches.append(images.cpu())
         remaining -= current_batch
-        generated_so_far = num_images - remaining
-        print(f"  Generated {generated_so_far}/{num_images} images …")
-
+        print(f"  Generated {num_images - remaining}/{num_images} images")
+        batch_index += 1
     return batches
 
 
 def save_individual_images(
     batches: list[torch.Tensor],
     out_dir: Path,
-    prefix: str = "face",
+    *,
+    prefix: str,
 ) -> None:
-    """Save each image as an individual PNG file for FID evaluation."""
-    idx = 0
+    image_index = 0
     for batch in batches:
-        for img in batch:
-            fname = out_dir / f"{prefix}_{idx:05d}.png"
-            vutils.save_image(img, fname)
-            idx += 1
-    print(f"Saved {idx} individual images to {out_dir.resolve()}")
+        for image in batch:
+            vutils.save_image(image, out_dir / f"{prefix}_{image_index:05d}.png")
+            image_index += 1
+    print(f"Saved {image_index} individual images to {out_dir.resolve()}")
 
 
 def save_preview_grid(
     batches: list[torch.Tensor],
     out_dir: Path,
-    nrow: int = 8,
-    max_preview: int = 64,
-    filename: str = "faces_grid.png",
+    *,
+    filename: str,
+    nrow: int,
+    max_preview: int,
 ) -> None:
-    """
-    Save a grid of up to `max_preview` images for quick visual inspection.
-    Useful for including in your report.
-    """
-    all_imgs = torch.cat(batches, dim=0)[:max_preview]
+    all_images = torch.cat(batches, dim=0)[:max_preview]
     grid_path = out_dir / filename
-    vutils.save_image(all_imgs, grid_path, nrow=nrow)
-    print(f"Saved preview grid ({len(all_imgs)} images) to {grid_path.resolve()}")
+    vutils.save_image(all_images, grid_path, nrow=nrow)
+    print(f"Saved preview grid to {grid_path.resolve()}")
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate human face images from a trained DDPM checkpoint.",
+        description="Generate face images from a trained DDPM checkpoint.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
-        "--checkpoint",
-        type=str,
-        default="checkpoints/ddpm_faces_final.pth",
-        help="Path to .pth checkpoint (state_dict only) saved by train.py. "
-             "Relative paths are resolved from the project root.",
-    )
-    parser.add_argument(
-        "--out_dir",
-        type=str,
-        default="results/generated_faces",
-        help="Directory where individual PNGs and the preview grid are saved.",
-    )
-    parser.add_argument(
-        "--num_images",
-        type=int,
-        default=DEFAULT_NUM_IMAGES,
-        help="Total number of images to generate. Use 300 for FID evaluation.",
-    )
-    parser.add_argument(
-        "--batch_size",
-        type=int,
-        default=DEFAULT_BATCH_SIZE,
-        help="Images generated per forward pass. Reduce if you hit OOM.",
-    )
-    parser.add_argument(
-        "--image_size",
-        type=int,
-        default=DEFAULT_IMAGE_SIZE,
-        help="Spatial resolution (height == width). Must match training config.",
-    )
-    parser.add_argument(
-        "--timesteps",
-        type=int,
-        default=DEFAULT_TIMESTEPS,
-        help="Number of DDPM reverse diffusion steps. Must match training config.",
-    )
-    parser.add_argument(
-        "--base_channels",
-        type=int,
-        default=DEFAULT_BASE_CHANNELS,
-        help="U-Net base channel width. Must match training config.",
-    )
-    parser.add_argument(
-        "--time_dim",
-        type=int,
-        default=DEFAULT_TIME_DIM,
-        help="Sinusoidal time-embedding dimension. Must match training config.",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default=None,
-        help="Force a specific device (cuda / mps / cpu). Auto-detected if omitted.",
-    )
-    parser.add_argument(
-        "--no_grid",
-        action="store_true",
-        help="Skip saving the preview grid (saves time when only FID files are needed).",
-    )
-    parser.add_argument(
-        "--grid_rows",
-        type=int,
-        default=8,
-        help="Number of columns in the preview grid image.",
-    )
+    parser.add_argument("--checkpoint", type=str, default="runs/ddpm_runs/celebahq_run_001/best_model.pth")
+    parser.add_argument("--out_dir", type=str, default="results/generated_faces")
+    parser.add_argument("--num_images", type=int, default=300)
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--device", type=str, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+
+    parser.add_argument("--image_size", type=int, default=None)
+    parser.add_argument("--timesteps", type=int, default=None)
+    parser.add_argument("--base_channels", type=int, default=None)
+    parser.add_argument("--time_dim", type=int, default=None)
+    parser.add_argument("--channel_mults", type=str, default=None)
+    parser.add_argument("--num_res_blocks", type=int, default=None)
+    parser.add_argument("--dropout", type=float, default=None)
+    parser.add_argument("--attention_resolutions", type=str, default=None)
+
+    parser.add_argument("--prefix", type=str, default="face")
+    parser.add_argument("--no_individual", action="store_true")
+    parser.add_argument("--no_grid", action="store_true")
+    parser.add_argument("--grid_rows", type=int, default=8)
+    parser.add_argument("--max_preview", type=int, default=64)
+    parser.add_argument("--grid_name", type=str, default="faces_grid.png")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-
-    # ------------------------------------------------------------------ device
     device = resolve_device(args.device)
-    print(f"torch : {torch.__version__}")
-    print(f"device: {device}")
-    if device == "cpu":
-        print(
-            "\nWarning: CPU inference with 1000 DDPM steps at 256×256 is extremely slow.\n"
-            "         Use --device cuda (Colab GPU) or --device mps (Apple Silicon).\n"
-            "         For a quick CPU smoke-test use --timesteps 200 --image_size 64.\n"
-        )
-
-    # --------------------------------------------------------------- paths
-    ckpt = Path(args.checkpoint)
-    if not ckpt.is_absolute():
-        ckpt = _ROOT / ckpt
-    if not ckpt.is_file():
-        raise SystemExit(
-            f"\nCheckpoint not found: {ckpt}\n"
-            f"Project root resolved to: {_ROOT}\n"
-            f"Tip: pass --checkpoint relative/to/project/root/ddpm_faces_final.pth\n"
-        )
-
-    out_dir = Path(args.out_dir)
-    if not out_dir.is_absolute():
-        out_dir = _ROOT / out_dir
+    checkpoint_path = resolve_project_path(args.checkpoint)
+    out_dir = resolve_project_path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # --------------------------------------------------------------- model
-    print(
-        f"\nLoading U-Net  (base_channels={args.base_channels}, "
-        f"time_dim={args.time_dim}) …"
+    if not checkpoint_path.is_file():
+        raise SystemExit(f"Checkpoint not found: {checkpoint_path}")
+
+    state_dict, checkpoint = load_checkpoint_payload(checkpoint_path, device)
+    model_config, diffusion_config = config_from_checkpoint(checkpoint)
+
+    image_size = args.image_size or int(model_config.get("image_size", 64))
+    timesteps = args.timesteps or int(diffusion_config.get("timesteps", 1000))
+    base_channels = args.base_channels or int(model_config.get("base_channels", 64))
+    time_dim = args.time_dim or int(model_config.get("time_dim", 256))
+    channel_mults = parse_int_list(
+        args.channel_mults,
+        tuple(model_config.get("channel_mults", [1, 2, 4, 8])),
     )
-    model = build_model(args.base_channels, args.time_dim, device)
-    load_checkpoint(model, ckpt, device)
-    n_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f"Model loaded   ({n_params:.1f}M parameters)")
+    num_res_blocks = args.num_res_blocks or int(model_config.get("num_res_blocks", 2))
+    dropout = args.dropout if args.dropout is not None else float(model_config.get("dropout", 0.1))
+    attention_resolutions = parse_int_list(
+        args.attention_resolutions,
+        tuple(model_config.get("attention_resolutions", [16, 8])),
+    )
 
-    # ----------------------------------------------------------- scheduler
-    scheduler = DDPMScheduler(timesteps=args.timesteps, device=device)
+    print("Project root:", _ROOT)
+    print("Checkpoint:", checkpoint_path)
+    print("Output dir:", out_dir)
+    print("Device:", device)
+    print(
+        "Generation params:",
+        json.dumps(
+            {
+                "num_images": args.num_images,
+                "batch_size": args.batch_size,
+                "image_size": image_size,
+                "timesteps": timesteps,
+                "base_channels": base_channels,
+                "time_dim": time_dim,
+                "channel_mults": list(channel_mults),
+                "num_res_blocks": num_res_blocks,
+                "dropout": dropout,
+                "attention_resolutions": list(attention_resolutions),
+            },
+            indent=2,
+        ),
+    )
 
-    # ----------------------------------------------------------- generation
+    model = build_model_from_config(
+        model_config=model_config,
+        image_size=image_size,
+        base_channels=base_channels,
+        time_dim=time_dim,
+        channel_mults=channel_mults,
+        num_res_blocks=num_res_blocks,
+        dropout=dropout,
+        attention_resolutions=attention_resolutions,
+        device=device,
+    )
+    model.load_state_dict(state_dict)
+    model.eval()
+    scheduler = DDPMScheduler(timesteps=timesteps, device=device)
+
     num_batches = math.ceil(args.num_images / args.batch_size)
-    print(
-        f"\nGenerating {args.num_images} images "
-        f"in {num_batches} batches of up to {args.batch_size} …\n"
-        f"image_size={args.image_size}, timesteps={args.timesteps}\n"
+    print(f"Generating {args.num_images} images in {num_batches} batches.")
+    batches = generate_in_batches(
+        model,
+        scheduler,
+        num_images=args.num_images,
+        batch_size=args.batch_size,
+        image_size=image_size,
+        device=device,
+        seed=args.seed,
     )
 
-    with torch.inference_mode():
-        batches = generate_in_batches(
-            model=model,
-            scheduler=scheduler,
-            num_images=args.num_images,
-            batch_size=args.batch_size,
-            image_size=args.image_size,
-            device=device,
-        )
-
-    # --------------------------------------------------------------- saving
-    print("\nSaving outputs …")
-    save_individual_images(batches, out_dir)
-
+    if not args.no_individual:
+        save_individual_images(batches, out_dir, prefix=args.prefix)
     if not args.no_grid:
-        save_preview_grid(batches, out_dir, nrow=args.grid_rows)
-
-    print("\nDone.")
+        save_preview_grid(
+            batches,
+            out_dir,
+            filename=args.grid_name,
+            nrow=args.grid_rows,
+            max_preview=args.max_preview,
+        )
+    print("Done.")
 
 
 if __name__ == "__main__":

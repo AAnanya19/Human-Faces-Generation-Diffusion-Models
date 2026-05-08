@@ -135,10 +135,11 @@ Run from the project root:
 python3 scripts/train_celebahq_local.py
 ```
 
-This uses the same default settings as `notebooks/colab_celebahq_train.ipynb`:
-300 epochs, batch size 16, 64×64 training images, 1000 DDPM timesteps, 3000
-folder images with 300 held out, samples every 10 epochs, and checkpoints every
-25 epochs.
+This is the local running script for the CelebA task. It uses the same defaults
+as `notebooks/colab_celebahq_train.ipynb`: 300 epochs, batch size 16, 64×64
+training images, 1000 DDPM timesteps, 3000 folder images with 300 fixed test
+images held out, cosine LR scheduling, checkpoints/FID every 50 epochs, 300
+generated images per FID, and FID early stopping with patience 4.
 
 Useful local options:
 
@@ -152,14 +153,48 @@ python3 scripts/train_celebahq_local.py --dataset_zip /path/to/celeba_hq_256.zip
 # Pick a new run folder
 python3 scripts/train_celebahq_local.py --run_name celebahq_mps_test
 
+# Toggle LR scheduling
+python3 scripts/train_celebahq_local.py --lr_scheduler cosine
+python3 scripts/train_celebahq_local.py --lr_scheduler fixed
+
+# Change FID early-stopping patience
+python3 scripts/train_celebahq_local.py --fid_patience 6
+
+# Keep/change the deterministic train/test split
+python3 scripts/train_celebahq_local.py --split_seed 42
+
+# Disable FID for a fast smoke test
+python3 scripts/train_celebahq_local.py --disable_fid --epochs 1
+
 # Resume a local run
 python3 scripts/train_celebahq_local.py \
-  --resume_checkpoint runs/ddpm_runs/celebahq_run_001/ddpm_epoch_25.pth
+  --resume_checkpoint runs/ddpm_runs/celebahq_run_001/latest_checkpoint.pth
 ```
 
 The launcher auto-selects `cuda` first, then Apple `mps`, then CPU. CPU training
 is blocked by default because it is extremely slow; pass `--allow_cpu` only for
 debugging.
+
+Important run outputs:
+
+```text
+latest_checkpoint.pth   # overwritten every checkpoint/FID interval
+best_model.pth          # overwritten only when FID improves
+ddpm_epoch_50.pth       # epoch checkpoint snapshots
+fid_log.csv             # epoch,FID,best-FID records
+training_log.csv        # loss, LR, FID, best-model flags
+run_config.json         # diffusion/model/training/evaluation params
+fid/epoch_00050/        # generated images used for that FID calculation
+```
+
+Generate from a trained checkpoint:
+
+```bash
+python3 scripts/generate_faces.py \
+  --checkpoint runs/ddpm_runs/celebahq_run_001/best_model.pth \
+  --out_dir results/generated_faces \
+  --num_images 300
+```
 
 ## Workflow
 

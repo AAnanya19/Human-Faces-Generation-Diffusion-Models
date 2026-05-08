@@ -24,13 +24,16 @@ class ButterflyDataset(torch.utils.data.Dataset):
 class FolderImageDataset(torch.utils.data.Dataset):
     IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
-    def __init__(self, root_dir, transform=None):
+    def __init__(self, root_dir, transform=None, image_paths=None):
         self.root_dir = Path(root_dir)
         self.transform = transform
-        self.image_paths = sorted(
-            p for p in self.root_dir.rglob("*")
-            if p.is_file() and p.suffix.lower() in self.IMAGE_EXTENSIONS
-        )
+        if image_paths is None:
+            self.image_paths = sorted(
+                p for p in self.root_dir.rglob("*")
+                if p.is_file() and p.suffix.lower() in self.IMAGE_EXTENSIONS
+            )
+        else:
+            self.image_paths = [Path(path) for path in image_paths]
         if not self.image_paths:
             raise FileNotFoundError(f"No images found under: {self.root_dir}")
 
@@ -47,13 +50,17 @@ class FolderImageDataset(torch.utils.data.Dataset):
 # Define preprocessing steps
 
 
-def get_transforms(image_size=128):
-    return transforms.Compose([
+def get_transforms(image_size=128, train=True):
+    transform_steps = [
         transforms.Resize((image_size, image_size)),
-        transforms.RandomHorizontalFlip(),
+    ]
+    if train:
+        transform_steps.append(transforms.RandomHorizontalFlip())
+    transform_steps.extend([
         transforms.ToTensor(),
         transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
     ])
+    return transforms.Compose(transform_steps)
 
 # Load the full butterfly dataset without splitting
 
@@ -79,10 +86,11 @@ def create_dataloaders(
     return_split_info=False,
 ):
     split_info = None
-    transform = get_transforms(image_size=image_size)
+    train_transform = get_transforms(image_size=image_size, train=True)
+    eval_transform = get_transforms(image_size=image_size, train=False)
     if dataset_source == "hf":
         data = full_dataset()
-        train_dataset = ButterflyDataset(data, transform=transform)
+        train_dataset = ButterflyDataset(data, transform=train_transform)
         test_dataset = None
         if return_split_info:
             split_info = {
@@ -96,7 +104,12 @@ def create_dataloaders(
             raise ValueError(
                 "dataset_path must be provided when dataset_source='folder'")
         full_folder_dataset = FolderImageDataset(
-            dataset_path, transform=transform)
+            dataset_path, transform=train_transform)
+        eval_folder_dataset = FolderImageDataset(
+            dataset_path,
+            transform=eval_transform,
+            image_paths=full_folder_dataset.image_paths,
+        )
         total_images = len(full_folder_dataset)
 
         if folder_subset_size is not None:
@@ -124,7 +137,7 @@ def create_dataloaders(
             shuffled_indices = [selected_indices[idx] for idx in permutation]
             test_indices = shuffled_indices[:folder_test_size]
             train_indices = shuffled_indices[folder_test_size:]
-            test_dataset = Subset(full_folder_dataset, test_indices)
+            test_dataset = Subset(eval_folder_dataset, test_indices)
         else:
             train_indices = selected_indices
             test_dataset = None
