@@ -61,7 +61,8 @@ def safe_torch_load(path: Path, device: str):
 def load_checkpoint_payload(ckpt_path: Path, device: str) -> tuple[dict, dict]:
     payload = safe_torch_load(ckpt_path, device)
     if isinstance(payload, dict) and "model_state_dict" in payload:
-        return payload["model_state_dict"], payload
+        state_dict = payload.get("eval_model_state_dict", payload["model_state_dict"])
+        return state_dict, payload
     return payload, {}
 
 

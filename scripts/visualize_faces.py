@@ -125,7 +125,7 @@ def load_checkpoint_payload(checkpoint_path: Path, device: str) -> dict | dict[s
 
 def extract_state_dict(payload: dict | dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     if isinstance(payload, dict):
-        for key in ("model_state_dict", "state_dict", "model"):
+        for key in ("eval_model_state_dict", "model_state_dict", "state_dict", "model"):
             if key in payload and isinstance(payload[key], dict):
                 return payload[key]
         if payload and all(isinstance(key, str) for key in payload.keys()):

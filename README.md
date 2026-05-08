@@ -135,11 +135,9 @@ Run from the project root:
 python3 scripts/train_celebahq_local.py
 ```
 
-This is the local running script for the CelebA task. It uses the same defaults
-as `notebooks/colab_celebahq_train.ipynb`: 300 epochs, batch size 16, 64×64
-training images, 1000 DDPM timesteps, 3000 folder images with 300 fixed test
-images held out, cosine LR scheduling, checkpoints/FID every 50 epochs, 300
-generated images per FID, and FID early stopping with patience 4.
+This is the local running script for the CelebA task. The Colab training
+notebook exposes the same core switches, including EMA, FID, checkpointing, and
+LR scheduling. Local outputs are kept under `runs/ddpm_runs/<run>/`.
 
 Useful local options:
 
@@ -156,6 +154,9 @@ python3 scripts/train_celebahq_local.py --run_name celebahq_mps_test
 # Toggle LR scheduling
 python3 scripts/train_celebahq_local.py --lr_scheduler cosine
 python3 scripts/train_celebahq_local.py --lr_scheduler fixed
+
+# Toggle EMA. It is off by default for clean baseline comparisons.
+python3 scripts/train_celebahq_local.py --use_ema
 
 # Change FID early-stopping patience
 python3 scripts/train_celebahq_local.py --fid_patience 6
