@@ -123,6 +123,9 @@ def parse_args() -> argparse.Namespace:
     training.add_argument("--weight_decay", type=float, default=1e-4)
     training.add_argument("--grad_clip", type=float, default=1.0)
     training.add_argument("--checkpoint_every", type=int, default=50)
+    # EMA is opt-in so baseline runs stay directly comparable unless enabled.
+    training.add_argument("--use_ema", action="store_true")
+    training.add_argument("--ema_decay", type=float, default=0.9999)
     training.add_argument("--resume_checkpoint", type=str, default=None)
     training.add_argument("--device", type=str, default=None)
 
@@ -210,6 +213,8 @@ def main() -> None:
         weight_decay=args.weight_decay,
         grad_clip=args.grad_clip,
         checkpoint_every=args.checkpoint_every,
+        use_ema=args.use_ema,
+        ema_decay=args.ema_decay,
         resume_checkpoint=args.resume_checkpoint,
         # Split and dataloader params
         dataset_source="folder",
