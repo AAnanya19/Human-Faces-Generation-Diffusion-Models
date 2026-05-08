@@ -241,3 +241,95 @@ class DDPMScheduler:
         Allow len(scheduler) to return the total number of timesteps.
         """
         return self.timesteps
+
+
+class DDIMScheduler(DDPMScheduler):
+    """
+    DDIM sampler (Song et al., 2020).
+
+    Uses the same trained model and noise schedule as DDPM but replaces the
+    stochastic reverse step with a deterministic (or low-noise) update that
+    operates on a small subsequence of timesteps.
+
+    Key properties:
+    - eta = 0  → fully deterministic (DDIM)
+    - eta = 1  → recovers DDPM variance
+    - ddim_steps << T → much faster sampling (e.g. 50 steps vs 1000)
+
+    Reverse update for one DDIM step (t → t_prev):
+
+        pred_x0 = (x_t - sqrt(1 - ā_t) * eps_theta) / sqrt(ā_t)
+        x_{t_prev} = sqrt(ā_{t_prev}) * pred_x0
+                   + sqrt(1 - ā_{t_prev} - σ²) * eps_theta
+                   + σ * ε
+
+    where σ = eta * sqrt((1 - ā_{t_prev}) / (1 - ā_t)) * sqrt(1 - ā_t / ā_{t_prev})
+    """
+
+    def __init__(
+        self,
+        timesteps: int = 1000,
+        beta_start: float = 1e-4,
+        beta_end: float = 2e-2,
+        device: str = "cpu",
+        ddim_steps: int = 50,
+        eta: float = 0.0,
+    ):
+        """
+        Args:
+            ddim_steps:
+                Number of denoising steps to actually perform (<<T for speed).
+
+            eta:
+                Controls stochasticity. 0 = deterministic DDIM, 1 = DDPM-level noise.
+        """
+        super().__init__(timesteps, beta_start, beta_end, device)
+        self.ddim_steps = ddim_steps
+        self.eta = eta
+
+        step_ratio = timesteps // ddim_steps
+        # Evenly spaced subsequence in descending order, e.g. [999, 979, …, 19]
+        self.ddim_timesteps = list(reversed(range(step_ratio - 1, timesteps, step_ratio)))
+
+    @torch.no_grad()
+    def ddim_step(
+        self,
+        x_t: torch.Tensor,
+        pred_noise: torch.Tensor,
+        t: int,
+        t_prev: int,
+    ) -> torch.Tensor:
+        """
+        One DDIM reverse step: x_t → x_{t_prev}.
+
+        Args:
+            x_t:      Current noisy image, shape [B, C, H, W].
+            pred_noise: Model noise prediction at timestep t, same shape.
+            t:        Current (higher) timestep index.
+            t_prev:   Target (lower) timestep index; use -1 to signal t_prev = 0
+                      boundary where alpha_bar_prev should be 1.0.
+        """
+        abar_t = self.alpha_cumprod[t]
+        abar_prev = (
+            self.alpha_cumprod[t_prev]
+            if t_prev >= 0
+            else torch.tensor(1.0, device=self.device)
+        )
+
+        # Reconstruct x0 estimate from x_t and predicted noise
+        pred_x0 = (x_t - torch.sqrt(1.0 - abar_t) * pred_noise) / torch.sqrt(abar_t)
+        pred_x0 = pred_x0.clamp(-1.0, 1.0)
+
+        # DDIM sigma — 0 when eta=0 (fully deterministic)
+        sigma_t = (
+            self.eta
+            * torch.sqrt((1.0 - abar_prev) / (1.0 - abar_t))
+            * torch.sqrt(1.0 - abar_t / abar_prev)
+        )
+
+        # Direction pointing toward x_t
+        dir_xt = torch.sqrt(1.0 - abar_prev - sigma_t ** 2) * pred_noise
+
+        noise = torch.randn_like(x_t) if self.eta > 0.0 else 0.0
+
+        return torch.sqrt(abar_prev) * pred_x0 + dir_xt + sigma_t * noise

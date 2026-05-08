@@ -187,3 +187,96 @@ def sample_with_trajectory(
             trajectory.append(x_t.detach().cpu())
 
     return x_t, trajectory
+
+
+@torch.no_grad()
+def sample_ddim(
+    model: torch.nn.Module,
+    scheduler,
+    image_size: int,
+    batch_size: int,
+    channels: int = 3,
+    device: str = "cpu",
+    initial_noise: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    Generate images using DDIM sampling (Song et al., 2020).
+
+    Requires a DDIMScheduler with a `ddim_timesteps` list and `ddim_step` method.
+    Uses far fewer forward passes than DDPM (e.g. 50 instead of 1000).
+
+    Args:
+        model:      Trained denoising model (same as used for DDPM training).
+        scheduler:  DDIMScheduler instance.
+        image_size: Height and width of generated images.
+        batch_size: Number of images to generate.
+        channels:   Number of image channels.
+        device:     Compute device.
+        initial_noise: Optional fixed starting noise for reproducibility.
+
+    Returns:
+        Final generated images of shape [B, C, H, W].
+    """
+    model.eval()
+
+    if initial_noise is None:
+        x_t = torch.randn(batch_size, channels, image_size, image_size, device=device)
+    else:
+        x_t = initial_noise.to(device)
+
+    timesteps = scheduler.ddim_timesteps  # descending list, e.g. [999, 979, ..., 19]
+
+    for i, t in enumerate(timesteps):
+        t_prev = timesteps[i + 1] if i + 1 < len(timesteps) else -1
+
+        t_batch = torch.full((batch_size,), t, device=device, dtype=torch.long)
+        pred_noise = model(x_t, t_batch)
+
+        x_t = scheduler.ddim_step(x_t, pred_noise, t, t_prev)
+
+    return x_t
+
+
+@torch.no_grad()
+def sample_ddim_with_trajectory(
+    model: torch.nn.Module,
+    scheduler,
+    image_size: int,
+    batch_size: int,
+    channels: int = 3,
+    device: str = "cpu",
+    save_every: int = 10,
+    initial_noise: torch.Tensor | None = None,
+):
+    """
+    DDIM sampling while storing intermediate states.
+
+    Args:
+        save_every: Save one state every N DDIM steps (not raw timesteps).
+
+    Returns:
+        final_images: Shape [B, C, H, W].
+        trajectory:   List of intermediate tensors on CPU.
+    """
+    model.eval()
+
+    if initial_noise is None:
+        x_t = torch.randn(batch_size, channels, image_size, image_size, device=device)
+    else:
+        x_t = initial_noise.to(device)
+
+    trajectory = [x_t.detach().cpu()]
+    timesteps = scheduler.ddim_timesteps
+
+    for i, t in enumerate(timesteps):
+        t_prev = timesteps[i + 1] if i + 1 < len(timesteps) else -1
+
+        t_batch = torch.full((batch_size,), t, device=device, dtype=torch.long)
+        pred_noise = model(x_t, t_batch)
+
+        x_t = scheduler.ddim_step(x_t, pred_noise, t, t_prev)
+
+        if i % save_every == 0 or i == len(timesteps) - 1:
+            trajectory.append(x_t.detach().cpu())
+
+    return x_t, trajectory
