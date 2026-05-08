@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager, nullcontext
 import csv
 import json
 import os
@@ -127,17 +128,27 @@ def append_fid_log(
     fid: float,
     best_fid: float,
     is_best: bool,
+    used_ema: bool,
     num_generated: int,
     num_real: int,
 ) -> None:
     append_csv_row(
         Path(save_dir) / "fid_log.csv",
-        ["epoch", "fid", "best_fid", "is_best", "num_generated", "num_real"],
+        [
+            "epoch",
+            "fid",
+            "best_fid",
+            "is_best",
+            "used_ema",
+            "num_generated",
+            "num_real",
+        ],
         {
             "epoch": epoch,
             "fid": f"{fid:.6f}",
             "best_fid": f"{best_fid:.6f}",
             "is_best": int(is_best),
+            "used_ema": int(used_ema),
             "num_generated": num_generated,
             "num_real": num_real,
         },
@@ -185,12 +196,93 @@ def build_lr_scheduler(
     raise ValueError("lr_scheduler must be either 'fixed' or 'cosine'")
 
 
+class ModelEMA:
+    """
+    Keeps an exponential moving average of trainable model weights.
+
+    Diffusion samples are often cleaner from EMA weights because they smooth out
+    noisy step-to-step optimizer updates. The raw model is still kept for
+    resuming training; EMA weights are used only for sampling/FID/checkpoint
+    evaluation when enabled.
+    """
+
+    def __init__(self, model: nn.Module, decay: float) -> None:
+        if decay < 0.0 or decay >= 1.0:
+            raise ValueError("ema_decay must be >= 0.0 and < 1.0")
+        self.decay = decay
+        self.shadow = {
+            name: param.detach().clone()
+            for name, param in model.named_parameters()
+            if param.requires_grad
+        }
+
+    @torch.no_grad()
+    def update(self, model: nn.Module) -> None:
+        for name, param in model.named_parameters():
+            if name not in self.shadow:
+                continue
+            self.shadow[name].mul_(self.decay).add_(
+                param.detach(),
+                alpha=1.0 - self.decay,
+            )
+
+    @torch.no_grad()
+    def reset(self, model: nn.Module) -> None:
+        for name, param in model.named_parameters():
+            if name in self.shadow:
+                self.shadow[name].copy_(param.detach())
+
+    def state_dict(self) -> dict:
+        return {
+            "decay": self.decay,
+            "shadow": {
+                name: tensor.detach().clone()
+                for name, tensor in self.shadow.items()
+            },
+        }
+
+    @torch.no_grad()
+    def load_state_dict(self, state: dict) -> None:
+        self.decay = float(state.get("decay", self.decay))
+        shadow = state.get("shadow", state)
+        for name, tensor in shadow.items():
+            if name in self.shadow:
+                self.shadow[name].copy_(tensor.to(self.shadow[name].device))
+
+    def model_state_dict(self, model: nn.Module) -> dict:
+        state = {
+            name: tensor.detach().clone()
+            for name, tensor in model.state_dict().items()
+        }
+        for name, tensor in self.shadow.items():
+            state[name] = tensor.detach().clone()
+        return state
+
+    @contextmanager
+    def average_parameters(self, model: nn.Module):
+        backup = {}
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if name not in self.shadow:
+                    continue
+                backup[name] = param.detach().clone()
+                param.copy_(self.shadow[name])
+        try:
+            yield
+        finally:
+            with torch.no_grad():
+                for name, param in model.named_parameters():
+                    if name in backup:
+                        param.copy_(backup[name])
+
+
 def build_checkpoint_state(
     *,
     epoch: int,
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     lr_scheduler,
+    ema: ModelEMA | None,
     losses: list[float],
     fid_history: list[dict],
     best_fid: float | None,
@@ -200,6 +292,9 @@ def build_checkpoint_state(
     state = {
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
+        "eval_model_state_dict": (
+            ema.model_state_dict(model) if ema is not None else model.state_dict()
+        ),
         "optimizer_state_dict": optimizer.state_dict(),
         "loss_history": losses,
         "fid_history": fid_history,
@@ -213,6 +308,8 @@ def build_checkpoint_state(
     }
     if lr_scheduler is not None:
         state["lr_scheduler_state_dict"] = lr_scheduler.state_dict()
+    if ema is not None:
+        state["ema_state_dict"] = ema.state_dict()
     return state
 
 
@@ -234,6 +331,7 @@ def load_resume_state(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     lr_scheduler,
+    ema: ModelEMA | None,
     device: str,
 ) -> tuple[int, list[float], list[dict], float | None, int]:
     if checkpoint_path is None:
@@ -250,6 +348,11 @@ def load_resume_state(
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         if lr_scheduler is not None and "lr_scheduler_state_dict" in checkpoint:
             lr_scheduler.load_state_dict(checkpoint["lr_scheduler_state_dict"])
+        if ema is not None:
+            if "ema_state_dict" in checkpoint:
+                ema.load_state_dict(checkpoint["ema_state_dict"])
+            else:
+                ema.reset(model)
         return (
             int(checkpoint.get("epoch", 0)),
             list(checkpoint.get("loss_history", [])),
@@ -259,6 +362,8 @@ def load_resume_state(
         )
 
     model.load_state_dict(checkpoint)
+    if ema is not None:
+        ema.reset(model)
     return 0, [], [], None, 0
 
 
@@ -459,6 +564,8 @@ def train(
     weight_decay: float = 1e-4,
     grad_clip: float = 1.0,
     checkpoint_every: int = 50,
+    use_ema: bool = False,
+    ema_decay: float = 0.9999,
     dataset_source: str = "hf",
     dataset_path: str | None = None,
     folder_subset_size: int | None = None,
@@ -508,6 +615,8 @@ def train(
             "weight_decay": weight_decay,
             "grad_clip": grad_clip,
             "checkpoint_every": checkpoint_every,
+            "use_ema": use_ema,
+            "ema_decay": ema_decay,
             "device": device,
             "save_dir": save_dir,
             "resume_checkpoint": resume_checkpoint,
@@ -599,6 +708,7 @@ def train(
     scheduler = DDPMScheduler(timesteps=timesteps, device=device)
     criterion = nn.MSELoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    ema = ModelEMA(model, decay=ema_decay) if use_ema else None
     lr_scheduler_obj = build_lr_scheduler(
         optimizer,
         lr_scheduler=lr_scheduler,
@@ -612,6 +722,7 @@ def train(
         model=model,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler_obj,
+        ema=ema,
         device=device,
     )
     if losses:
@@ -655,6 +766,8 @@ def train(
             if grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
             optimizer.step()
+            if ema is not None:
+                ema.update(model)
 
             running_loss += loss.item()
             progress_bar.set_postfix(loss=loss.item(), lr=get_current_lr(optimizer))
@@ -670,86 +783,91 @@ def train(
         append_loss_log(save_dir, current_epoch, avg_loss)
         print(f"Epoch [{current_epoch}/{epochs}] - Avg Loss: {avg_loss:.6f} - LR: {current_lr:.8f}")
 
-        if sample_every > 0 and current_epoch % sample_every == 0:
-            save_generated_samples(
-                model,
-                scheduler,
-                image_size=image_size,
-                device=device,
-                save_path=sample_dir / f"epoch_{current_epoch}.png",
-                batch_size=num_sample_images,
-                seed=fixed_sample_seed,
-            )
-            save_trajectory_samples(
-                model,
-                scheduler,
-                image_size=image_size,
-                device=device,
-                save_path=trajectory_dir / f"epoch_{current_epoch}.png",
-                seed=fixed_trajectory_seed,
-                save_every=trajectory_save_every,
-            )
-
         fid_score = None
         is_best = False
         should_checkpoint = checkpoint_every > 0 and current_epoch % checkpoint_every == 0
         should_fid = enable_fid and fid_every > 0 and current_epoch % fid_every == 0
 
-        if should_fid:
-            if feature_extractor is None:
-                feature_extractor = InceptionFeatureExtractor().to(resolved_fid_device)
-            generated_dir = (
-                fid_root / f"epoch_{current_epoch:05d}" / "generated"
-                if save_fid_images
-                else None
-            )
-            fid_score, real_fid_features = evaluate_fid(
-                model,
-                scheduler,
-                test_loader=test_loader,
-                real_features=real_fid_features,
-                feature_extractor=feature_extractor,
-                image_size=image_size,
-                device=device,
-                fid_device=resolved_fid_device,
-                fid_num_images=fid_num_images,
-                fid_batch_size=fid_batch_size,
-                fid_seed=fid_seed,
-                save_generated_dir=generated_dir,
-            )
-            is_best = best_fid is None or fid_score < best_fid
-            if is_best:
-                best_fid = fid_score
-                fid_no_improve_count = 0
-            else:
-                fid_no_improve_count += 1
+        eval_context = ema.average_parameters(model) if ema is not None else nullcontext()
+        with eval_context:
+            if sample_every > 0 and current_epoch % sample_every == 0:
+                save_generated_samples(
+                    model,
+                    scheduler,
+                    image_size=image_size,
+                    device=device,
+                    save_path=sample_dir / f"epoch_{current_epoch}.png",
+                    batch_size=num_sample_images,
+                    seed=fixed_sample_seed,
+                )
+                save_trajectory_samples(
+                    model,
+                    scheduler,
+                    image_size=image_size,
+                    device=device,
+                    save_path=trajectory_dir / f"epoch_{current_epoch}.png",
+                    seed=fixed_trajectory_seed,
+                    save_every=trajectory_save_every,
+                )
 
-            fid_record = {
-                "epoch": current_epoch,
-                "fid": fid_score,
-                "best_fid": best_fid,
-                "is_best": is_best,
-            }
-            fid_history.append(fid_record)
-            append_fid_log(
-                save_dir,
-                epoch=current_epoch,
-                fid=fid_score,
-                best_fid=best_fid,
-                is_best=is_best,
-                num_generated=fid_num_images,
-                num_real=fid_num_images,
-            )
-            print(
-                f"Epoch [{current_epoch}/{epochs}] - FID: {fid_score:.4f} "
-                f"- Best FID: {best_fid:.4f}"
-            )
+            if should_fid:
+                if feature_extractor is None:
+                    feature_extractor = InceptionFeatureExtractor().to(resolved_fid_device)
+                generated_dir = (
+                    fid_root / f"epoch_{current_epoch:05d}" / "generated"
+                    if save_fid_images
+                    else None
+                )
+                fid_score, real_fid_features = evaluate_fid(
+                    model,
+                    scheduler,
+                    test_loader=test_loader,
+                    real_features=real_fid_features,
+                    feature_extractor=feature_extractor,
+                    image_size=image_size,
+                    device=device,
+                    fid_device=resolved_fid_device,
+                    fid_num_images=fid_num_images,
+                    fid_batch_size=fid_batch_size,
+                    fid_seed=fid_seed,
+                    save_generated_dir=generated_dir,
+                )
+                is_best = best_fid is None or fid_score < best_fid
+                if is_best:
+                    best_fid = fid_score
+                    fid_no_improve_count = 0
+                else:
+                    fid_no_improve_count += 1
+
+                fid_record = {
+                    "epoch": current_epoch,
+                    "fid": fid_score,
+                    "best_fid": best_fid,
+                    "is_best": is_best,
+                    "used_ema": ema is not None,
+                }
+                fid_history.append(fid_record)
+                append_fid_log(
+                    save_dir,
+                    epoch=current_epoch,
+                    fid=fid_score,
+                    best_fid=best_fid,
+                    is_best=is_best,
+                    used_ema=ema is not None,
+                    num_generated=fid_num_images,
+                    num_real=fid_num_images,
+                )
+                print(
+                    f"Epoch [{current_epoch}/{epochs}] - FID: {fid_score:.4f} "
+                    f"- Best FID: {best_fid:.4f}"
+                )
 
         checkpoint_state = build_checkpoint_state(
             epoch=current_epoch,
             model=model,
             optimizer=optimizer,
             lr_scheduler=lr_scheduler_obj,
+            ema=ema,
             losses=losses,
             fid_history=fid_history,
             best_fid=best_fid,
@@ -810,6 +928,7 @@ def train(
         model=model,
         optimizer=optimizer,
         lr_scheduler=lr_scheduler_obj,
+        ema=ema,
         losses=losses,
         fid_history=fid_history,
         best_fid=best_fid,
@@ -857,6 +976,9 @@ if __name__ == "__main__":
     training.add_argument("--weight_decay", type=float, default=1e-4)
     training.add_argument("--grad_clip", type=float, default=1.0)
     training.add_argument("--checkpoint_every", type=int, default=50)
+    # EMA is opt-in so baseline runs stay directly comparable unless enabled.
+    training.add_argument("--use_ema", action="store_true")
+    training.add_argument("--ema_decay", type=float, default=0.9999)
     training.add_argument("--dataset_source", type=str, default="hf")
     training.add_argument("--dataset_path", type=str, default=None)
     training.add_argument("--folder_subset_size", type=int, default=None)
@@ -906,6 +1028,8 @@ if __name__ == "__main__":
         weight_decay=args.weight_decay,
         grad_clip=args.grad_clip,
         checkpoint_every=args.checkpoint_every,
+        use_ema=args.use_ema,
+        ema_decay=args.ema_decay,
         dataset_source=args.dataset_source,
         dataset_path=args.dataset_path,
         folder_subset_size=args.folder_subset_size,
