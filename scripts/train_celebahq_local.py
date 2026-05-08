@@ -20,6 +20,8 @@ from src.training.train import resolve_device, train  # noqa: E402
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
+
+
 def parse_bool(value: str | bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -136,7 +138,8 @@ def parse_args() -> argparse.Namespace:
     training.add_argument("--weight_decay", type=float, default=1e-4)
     training.add_argument("--grad_clip", type=float, default=1.0)
     training.add_argument("--checkpoint_every", type=int, default=50)
-    training.add_argument("--use_ema", type=parse_bool, nargs="?", const=True, default=False)
+
+    training.add_argument("--use_ema", type=parse_bool, default=True)
     training.add_argument("--ema_decay", type=float, default=0.9999)
     training.add_argument("--resume_checkpoint", type=str, default=None)
     training.add_argument("--device", type=str, default=None)
