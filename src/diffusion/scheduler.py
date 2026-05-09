@@ -38,6 +38,7 @@ This implementation assumes:
 - timesteps are integer indices in [0, T-1]
 """
 
+import math
 import torch
 
 
@@ -54,6 +55,8 @@ class DDPMScheduler:
         timesteps: int = 1000,
         beta_start: float = 1e-4,
         beta_end: float = 2e-2,
+        noise_schedule: str = "linear",
+        cosine_s: float = 0.008,
         device: str = "cpu",
     ):
         """
@@ -69,16 +72,26 @@ class DDPMScheduler:
                 The last beta value in the variance schedule.
                 This is larger because later steps can add more noise.
 
+            noise_schedule:
+                Which diffusion noise schedule to use either linear or cosine.
+
+            cosine_s:
+                Offset used in cosine schedule formuala to shift curve to stablisise first noise steps.
+
         """
         self.timesteps = timesteps
         self.device = torch.device(device)
+        self.noise_schedule = noise_schedule.lower()
 
        
         # 1. Create the beta schedule
         # ------------------------------------------------------------------
         # beta_t controls how much noise is added at each timestep.
-        # We use a simple linear schedule from beta_start to beta_end.
-        self.betas = torch.linspace(beta_start, beta_end, timesteps, device=device)
+        self.betas = self._make_beta_schedule(
+            beta_start=beta_start,
+            beta_end=beta_end,
+            cosine_s=cosine_s,
+        )
 
         # alpha_t is the amount of signal retained at each step.
         self.alphas = 1.0 - self.betas
@@ -117,6 +130,44 @@ class DDPMScheduler:
         # This is used when sampling x_{t-1} from x_t.
         self.posterior_variance = (
             self.betas * (1.0 - self.alpha_cumprod_prev) / (1.0 - self.alpha_cumprod)
+        )
+
+    def _make_beta_schedule(
+        self,
+        beta_start: float,
+        beta_end: float,
+        cosine_s: float,
+    ) -> torch.Tensor:
+        """
+        Build the beta schedule used by the forward diffusion process.
+
+        Linear is the original schedule used in this project.
+        Cosine creates alpha_bar values with a cosine curve, then converts
+        those values into betas so the rest of the DDPM equations stay the same.
+        """
+        if self.noise_schedule == "linear":
+            return torch.linspace(
+                beta_start,
+                beta_end,
+                self.timesteps,
+                device=self.device,
+            )
+
+        if self.noise_schedule == "cosine":
+            steps = self.timesteps + 1
+            x = torch.linspace(0, self.timesteps, steps, device=self.device)
+            alpha_cumprod = torch.cos(
+                ((x / self.timesteps) + cosine_s)
+                / (1.0 + cosine_s)
+                * math.pi
+                * 0.5
+            ) ** 2
+            alpha_cumprod = alpha_cumprod / alpha_cumprod[0]
+            betas = 1.0 - (alpha_cumprod[1:] / alpha_cumprod[:-1])
+            return betas.clamp(min=1e-8, max=0.999)
+
+        raise ValueError(
+            f"Unknown noise_schedule '{self.noise_schedule}'."
         )
 
     def add_noise(
