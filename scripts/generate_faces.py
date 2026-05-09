@@ -196,6 +196,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--image_size", type=int, default=None)
     parser.add_argument("--timesteps", type=int, default=None)
+    parser.add_argument("--noise_schedule", choices=["linear", "cosine"], default=None)
     parser.add_argument("--base_channels", type=int, default=None)
     parser.add_argument("--time_dim", type=int, default=None)
     parser.add_argument("--channel_mults", type=str, default=None)
@@ -227,6 +228,7 @@ def main() -> None:
 
     image_size = args.image_size or int(model_config.get("image_size", 64))
     timesteps = args.timesteps or int(diffusion_config.get("timesteps", 1000))
+    noise_schedule = args.noise_schedule or diffusion_config.get("noise_schedule", "linear")
     base_channels = args.base_channels or int(model_config.get("base_channels", 64))
     time_dim = args.time_dim or int(model_config.get("time_dim", 256))
     channel_mults = parse_int_list(
@@ -252,6 +254,7 @@ def main() -> None:
                 "batch_size": args.batch_size,
                 "image_size": image_size,
                 "timesteps": timesteps,
+                "noise_schedule": noise_schedule,
                 "base_channels": base_channels,
                 "time_dim": time_dim,
                 "channel_mults": list(channel_mults),
@@ -276,7 +279,11 @@ def main() -> None:
     )
     model.load_state_dict(state_dict)
     model.eval()
-    scheduler = DDPMScheduler(timesteps=timesteps, device=device)
+    scheduler = DDPMScheduler(
+        timesteps=timesteps,
+        noise_schedule=noise_schedule,
+        device=device,
+    )
 
     num_batches = math.ceil(args.num_images / args.batch_size)
     print(f"Generating {args.num_images} images in {num_batches} batches.")

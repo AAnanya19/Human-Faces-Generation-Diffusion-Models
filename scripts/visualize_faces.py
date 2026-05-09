@@ -86,6 +86,7 @@ def infer_run_config(checkpoint_path: Path) -> dict:
 
 def resolve_model_config(run_config: dict, args: argparse.Namespace) -> dict:
     model_cfg = run_config.get("model", {}) if isinstance(run_config, dict) else {}
+    diffusion_cfg = run_config.get("diffusion", {}) if isinstance(run_config, dict) else {}
     channel_mults_value = model_cfg.get("channel_mults", args.channel_mults)
     attention_resolutions_value = model_cfg.get(
         "attention_resolutions", args.attention_resolutions
@@ -109,7 +110,8 @@ def resolve_model_config(run_config: dict, args: argparse.Namespace) -> dict:
 
     return {
         "image_size": int(run_config.get("image_size", args.image_size) or args.image_size),
-        "timesteps": int(run_config.get("timesteps", args.timesteps) or args.timesteps),
+        "timesteps": int(diffusion_cfg.get("timesteps", args.timesteps) or args.timesteps),
+        "noise_schedule": args.noise_schedule or diffusion_cfg.get("noise_schedule", "linear"),
         "base_channels": int(model_cfg.get("base_channels", args.base_channels) or args.base_channels),
         "time_dim": int(model_cfg.get("time_dim", args.time_dim) or args.time_dim),
         "channel_mults": channel_mults,
@@ -345,6 +347,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default=None, help="Force a device: cuda, mps, or cpu.")
     parser.add_argument("--image_size", type=int, default=DEFAULT_IMAGE_SIZE)
     parser.add_argument("--timesteps", type=int, default=DEFAULT_TIMESTEPS)
+    parser.add_argument("--noise_schedule", choices=["linear", "cosine"], default=None)
     parser.add_argument("--base_channels", type=int, default=DEFAULT_BASE_CHANNELS)
     parser.add_argument("--time_dim", type=int, default=DEFAULT_TIME_DIM)
     parser.add_argument("--channel_mults", type=str, default="1,2,4,8")
@@ -382,6 +385,7 @@ def main() -> None:
         "Model config:",
         f"image_size={cfg['image_size']}",
         f"timesteps={cfg['timesteps']}",
+        f"noise_schedule={cfg['noise_schedule']}",
         f"base_channels={cfg['base_channels']}",
         f"time_dim={cfg['time_dim']}",
     )
@@ -394,7 +398,11 @@ def main() -> None:
     model.eval()
     print("Checkpoint loaded successfully.")
 
-    scheduler = DDPMScheduler(timesteps=cfg["timesteps"], device=device)
+    scheduler = DDPMScheduler(
+        timesteps=cfg["timesteps"],
+        noise_schedule=cfg["noise_schedule"],
+        device=device,
+    )
 
     loss_history = load_loss_history(payload, resolve_project_path(args.loss_csv) if args.loss_csv else None)
     if not args.no_loss_plot:

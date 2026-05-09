@@ -544,6 +544,7 @@ def evaluate_fid(
 def train(
     # Diffusion
     timesteps: int = 1000,
+    noise_schedule: str = "linear",
     # Model
     image_size: int = 64,
     base_channels: int = 64,
@@ -593,6 +594,7 @@ def train(
     run_metadata = {
         "diffusion": {
             "timesteps": timesteps,
+            "noise_schedule": noise_schedule,
         },
         "model": {
             "in_channels": 3,
@@ -705,7 +707,11 @@ def train(
         attention_resolutions=attention_resolutions,
         image_size=image_size,
     ).to(device)
-    scheduler = DDPMScheduler(timesteps=timesteps, device=device)
+    scheduler = DDPMScheduler(
+        timesteps=timesteps,
+        noise_schedule=noise_schedule,
+        device=device,
+    )
     criterion = nn.MSELoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     ema = ModelEMA(model, decay=ema_decay) if use_ema else None
@@ -952,6 +958,7 @@ if __name__ == "__main__":
     # Diffusion
     diffusion = parser.add_argument_group("Diffusion")
     diffusion.add_argument("--timesteps", type=int, default=1000)
+    diffusion.add_argument("--noise_schedule", choices=["linear", "cosine"], default="linear")
 
     # Model
     model_args = parser.add_argument_group("Model")
@@ -1010,6 +1017,7 @@ if __name__ == "__main__":
 
     model, losses = train(
         timesteps=args.timesteps,
+        noise_schedule=args.noise_schedule,
         image_size=args.image_size,
         base_channels=args.base_channels,
         time_dim=args.time_dim,
