@@ -197,6 +197,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--image_size", type=int, default=None)
     parser.add_argument("--timesteps", type=int, default=None)
     parser.add_argument("--noise_schedule", choices=["linear", "cosine"], default=None)
+    parser.add_argument("--noise_max_beta", type=float, default=None)
     parser.add_argument("--base_channels", type=int, default=None)
     parser.add_argument("--time_dim", type=int, default=None)
     parser.add_argument("--channel_mults", type=str, default=None)
@@ -229,6 +230,11 @@ def main() -> None:
     image_size = args.image_size or int(model_config.get("image_size", 64))
     timesteps = args.timesteps or int(diffusion_config.get("timesteps", 1000))
     noise_schedule = args.noise_schedule or diffusion_config.get("noise_schedule", "linear")
+    noise_max_beta = (
+        args.noise_max_beta
+        if args.noise_max_beta is not None
+        else float(diffusion_config.get("noise_max_beta", 0.999))
+    )
     base_channels = args.base_channels or int(model_config.get("base_channels", 64))
     time_dim = args.time_dim or int(model_config.get("time_dim", 256))
     channel_mults = parse_int_list(
@@ -255,6 +261,7 @@ def main() -> None:
                 "image_size": image_size,
                 "timesteps": timesteps,
                 "noise_schedule": noise_schedule,
+                "noise_max_beta": noise_max_beta,
                 "base_channels": base_channels,
                 "time_dim": time_dim,
                 "channel_mults": list(channel_mults),
@@ -282,6 +289,7 @@ def main() -> None:
     scheduler = DDPMScheduler(
         timesteps=timesteps,
         noise_schedule=noise_schedule,
+        noise_max_beta=noise_max_beta,
         device=device,
     )
 

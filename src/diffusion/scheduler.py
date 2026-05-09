@@ -56,6 +56,7 @@ class DDPMScheduler:
         beta_start: float = 1e-4,
         beta_end: float = 2e-2,
         noise_schedule: str = "linear",
+        noise_max_beta: float = 0.999,
         cosine_s: float = 0.008,
         device: str = "cpu",
     ):
@@ -75,6 +76,10 @@ class DDPMScheduler:
             noise_schedule:
                 Which diffusion noise schedule to use either linear or cosine.
 
+            noise_max_beta:
+                Highest beta allowed for the cosine schedule.
+                Lower values make the last denoising steps less aggressive.
+
             cosine_s:
                 Offset used in cosine schedule formuala to shift curve to stablisise first noise steps.
 
@@ -82,6 +87,7 @@ class DDPMScheduler:
         self.timesteps = timesteps
         self.device = torch.device(device)
         self.noise_schedule = noise_schedule.lower()
+        self.noise_max_beta = noise_max_beta
 
        
         # 1. Create the beta schedule
@@ -164,7 +170,7 @@ class DDPMScheduler:
             ) ** 2
             alpha_cumprod = alpha_cumprod / alpha_cumprod[0]
             betas = 1.0 - (alpha_cumprod[1:] / alpha_cumprod[:-1])
-            return betas.clamp(min=1e-8, max=0.999)
+            return betas.clamp(min=1e-8, max=self.noise_max_beta)
 
         raise ValueError(
             f"Unknown noise_schedule '{self.noise_schedule}'."

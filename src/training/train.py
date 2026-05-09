@@ -545,6 +545,7 @@ def train(
     # Diffusion
     timesteps: int = 1000,
     noise_schedule: str = "linear",
+    noise_max_beta: float = 0.999,
     # Model
     image_size: int = 64,
     base_channels: int = 64,
@@ -595,6 +596,7 @@ def train(
         "diffusion": {
             "timesteps": timesteps,
             "noise_schedule": noise_schedule,
+            "noise_max_beta": noise_max_beta,
         },
         "model": {
             "in_channels": 3,
@@ -710,6 +712,7 @@ def train(
     scheduler = DDPMScheduler(
         timesteps=timesteps,
         noise_schedule=noise_schedule,
+        noise_max_beta=noise_max_beta,
         device=device,
     )
     criterion = nn.MSELoss()
@@ -959,6 +962,7 @@ if __name__ == "__main__":
     diffusion = parser.add_argument_group("Diffusion")
     diffusion.add_argument("--timesteps", type=int, default=1000)
     diffusion.add_argument("--noise_schedule", choices=["linear", "cosine"], default="linear")
+    diffusion.add_argument("--noise_max_beta", type=float, default=0.999)
 
     # Model
     model_args = parser.add_argument_group("Model")
@@ -1018,6 +1022,7 @@ if __name__ == "__main__":
     model, losses = train(
         timesteps=args.timesteps,
         noise_schedule=args.noise_schedule,
+        noise_max_beta=args.noise_max_beta,
         image_size=args.image_size,
         base_channels=args.base_channels,
         time_dim=args.time_dim,

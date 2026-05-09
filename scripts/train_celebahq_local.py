@@ -117,6 +117,7 @@ def parse_args() -> argparse.Namespace:
     diffusion = parser.add_argument_group("Diffusion params")
     diffusion.add_argument("--timesteps", type=int, default=1000)
     diffusion.add_argument("--noise_schedule", choices=["linear", "cosine"], default="linear")
+    diffusion.add_argument("--noise_max_beta", type=float, default=0.999)
 
     # Model params
     model = parser.add_argument_group("Model params")
@@ -208,6 +209,7 @@ def main() -> None:
         # Diffusion params
         timesteps=args.timesteps,
         noise_schedule=args.noise_schedule,
+        noise_max_beta=args.noise_max_beta,
         # Model params
         image_size=args.image_size,
         base_channels=args.base_channels,
