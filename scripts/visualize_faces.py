@@ -1,28 +1,10 @@
-"""Post-training visualization for DDPM face generation runs.
-
-This script is intended to be run after training has already finished.
-It loads a saved checkpoint, reconstructs the U-Net + DDPM scheduler,
-and writes a small set of visual artifacts to disk:
-
-- a loss curve from the checkpoint's `loss_history` or a CSV log
-- optional evaluation-metric plots from a CSV file you provide
-- a generated sample grid from the checkpoint
-- an optional denoising trajectory montage
-
-Examples:
-    python3 scripts/visualize_faces.py \
-        --checkpoint runs/ddpm_runs/celebahq_run_001/ddpm_final.pth
-
-    python3 scripts/visualize_faces.py \
-        --checkpoint runs/ddpm_runs/celebahq_run_001/ddpm_final.pth \
-        --metrics_csv runs/ddpm_runs/celebahq_run_001/eval_metrics.csv \
-        --loss_csv runs/ddpm_runs/celebahq_run_001/loss_log.csv
-"""
+"""Post-training visualisation for DDPM face runs."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -40,15 +22,17 @@ from src.diffusion.scheduler import DDPMScheduler  # noqa: E402
 from src.models.unet import UNet  # noqa: E402
 
 
-DEFAULT_IMAGE_SIZE = 256
-DEFAULT_TIMESTEPS = 1000
+# Defaults used when the run config is missing or incomplete.
 DEFAULT_BASE_CHANNELS = 128
-DEFAULT_TIME_DIM = 512
+DEFAULT_IMAGE_SIZE = 256
 DEFAULT_BATCH_SIZE = 8
+DEFAULT_TIMESTEPS = 1000
+DEFAULT_TIME_DIM = 512
 DEFAULT_PREVIEW_IMAGES = 16
 DEFAULT_TRAJECTORY_SAVE_EVERY = 100
 
 
+# Small utility helpers.
 def resolve_device(requested: str | None) -> str:
     if requested:
         return requested
@@ -73,6 +57,7 @@ def load_json_if_exists(path: Path) -> dict | None:
 
 
 def infer_run_config(checkpoint_path: Path) -> dict:
+    # Prefer the run config written next to the checkpoint.
     candidates = [
         checkpoint_path.parent / "run_config.json",
         checkpoint_path.parent.parent / "run_config.json",
@@ -85,6 +70,7 @@ def infer_run_config(checkpoint_path: Path) -> dict:
 
 
 def resolve_model_config(run_config: dict, args: argparse.Namespace) -> dict:
+    # Keep the checkpoint run settings if they exist, otherwise fall back to CLI defaults.
     model_cfg = run_config.get("model", {}) if isinstance(run_config, dict) else {}
     diffusion_cfg = run_config.get("diffusion", {}) if isinstance(run_config, dict) else {}
     channel_mults_value = model_cfg.get("channel_mults", args.channel_mults)
@@ -131,9 +117,10 @@ def extract_state_dict(payload: dict | dict[str, torch.Tensor]) -> dict[str, tor
             if key in payload and isinstance(payload[key], dict):
                 return payload[key]
         if payload and all(isinstance(key, str) for key in payload.keys()):
+            # Some checkpoints are saved as a plain state dict.
             tensor_like_values = sum(torch.is_tensor(value) for value in payload.values())
             if tensor_like_values > 0:
-                return payload  # plain state dict
+                return payload
     raise ValueError(
         "Checkpoint format not recognized. Expected either a plain state_dict or "
         "a dict containing model_state_dict/state_dict/model."
@@ -155,6 +142,7 @@ def build_model(cfg: dict, device: str) -> UNet:
 
 
 def load_loss_history(payload: dict | dict[str, torch.Tensor], loss_csv: Path | None) -> list[float]:
+    # Loss history can live in the checkpoint or a CSV log.
     if isinstance(payload, dict) and isinstance(payload.get("loss_history"), list):
         return [float(v) for v in payload["loss_history"]]
 
@@ -172,11 +160,12 @@ def plot_loss_curve(loss_history: list[float], out_path: Path) -> None:
         print("No loss history found; skipping loss plot.")
         return
 
+    # Simple line plot for training loss.
     plt.figure(figsize=(8, 5))
     plt.plot(range(1, len(loss_history) + 1), loss_history, marker="o", linewidth=1.5)
-    plt.title("Training Loss Curve")
+    plt.title("Training loss")
     plt.xlabel("Epoch")
-    plt.ylabel("Average Loss")
+    plt.ylabel("Average loss")
     plt.grid(True, alpha=0.25)
     plt.tight_layout()
     plt.savefig(out_path, dpi=200)
@@ -189,6 +178,7 @@ def plot_metrics_csv(metrics_csv: Path, out_path: Path) -> None:
         print("No metrics CSV provided; skipping evaluation-metric plot.")
         return
 
+    # Plot every numeric metric we can find.
     frame = pd.read_csv(metrics_csv)
     numeric_columns = list(frame.select_dtypes(include="number").columns)
     if not numeric_columns:
@@ -212,9 +202,9 @@ def plot_metrics_csv(metrics_csv: Path, out_path: Path) -> None:
     if len(numeric_columns) == 1 and x_column is None:
         plt.plot(x_values, frame[numeric_columns[0]], marker="o", linewidth=1.5)
 
-    plt.title("Evaluation Metrics")
+    plt.title("Evaluation metrics")
     plt.xlabel(x_column or "Index")
-    plt.ylabel("Metric Value")
+    plt.ylabel("Metric value")
     plt.grid(True, alpha=0.25)
     if len(numeric_columns) > 1:
         plt.legend()
@@ -237,6 +227,8 @@ def plot_fid_value(fid_payload: dict, out_path: Path) -> None:
     if not fid_payload or "fid" not in fid_payload:
         print("No FID value found in JSON payload; skipping FID plot.")
         return
+
+    # Bar chart for a single FID score.
     fid_val = float(fid_payload["fid"])
     plt.figure(figsize=(3, 4))
     plt.bar([0], [fid_val], color="#4C72B0")
@@ -253,8 +245,9 @@ def plot_fid_summary_csv(summary_csv: Path, out_path: Path) -> None:
     if not summary_csv.is_file():
         print("No FID summary CSV found; skipping.")
         return
+
+    # Summary plot for multiple runs.
     df = pd.read_csv(summary_csv)
-    # Prefer a column named 'fid' or 'FID'
     col = None
     for candidate in ("fid", "FID", "FID_score"):
         if candidate in df.columns:
@@ -287,6 +280,7 @@ def generate_preview_grid(
     out_path: Path,
     nrow: int,
 ) -> None:
+    # Generate a small sample grid for quick inspection.
     batches = []
     remaining = batch_size
     while remaining > 0:
@@ -315,6 +309,7 @@ def save_trajectory_montage(
     out_path: Path,
     save_every: int,
 ) -> None:
+    # Save one example trajectory so you can see the denoising steps.
     final_images, trajectory = sample_with_trajectory(
         model,
         scheduler,
@@ -331,6 +326,7 @@ def save_trajectory_montage(
 
 
 def parse_args() -> argparse.Namespace:
+    # Command line arguments stay close to the training script defaults.
     parser = argparse.ArgumentParser(
         description="Visualize DDPM face-generation checkpoints and evaluation metrics.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -368,6 +364,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
+    # Resolve paths and load the checkpoint.
     checkpoint_path = resolve_project_path(args.checkpoint)
     if not checkpoint_path.is_file():
         raise SystemExit(f"Checkpoint not found: {checkpoint_path}")
@@ -404,10 +401,12 @@ def main() -> None:
         device=device,
     )
 
+    # Pull any saved loss history and plot it.
     loss_history = load_loss_history(payload, resolve_project_path(args.loss_csv) if args.loss_csv else None)
     if not args.no_loss_plot:
         plot_loss_curve(loss_history, out_dir / "loss_curve.png")
 
+    # Plot extra metrics if the user passed a CSV.
     if not args.no_metrics_plot:
         metrics_csv = resolve_project_path(args.metrics_csv) if args.metrics_csv else None
         if metrics_csv is not None:
@@ -415,9 +414,7 @@ def main() -> None:
         else:
             print("No metrics CSV provided; skipping evaluation-metric plot.")
 
-    # ---------------------------------------------------------------
-    # FID JSON / aggregate CSV support
-    # ---------------------------------------------------------------
+    # Look for FID artifacts next to the checkpoint or in the run folder.
     fid_candidates = [
         checkpoint_path.parent / "fid.json",
         checkpoint_path.parent / "eval" / "fid.json",
@@ -430,17 +427,13 @@ def main() -> None:
         if payload is not None:
             print(f"Found FID JSON at: {cand}")
             plot_fid_value(payload, out_dir / "fid_value.png")
-            # also copy the JSON for reference
-            try:
-                (out_dir / "fid.json").write_text(json.dumps(payload, indent=2))
-            except Exception:
-                pass
+            (out_dir / "fid.json").write_text(json.dumps(payload, indent=2))
             found = True
             break
     if not found:
         print("No fid.json found in run folder(s).")
 
-    # look for aggregate fid summary CSVs
+    # Aggregate FID from previous runs, if it exists.
     summary_candidates = [
         _ROOT / "results" / "celebahq" / "eval" / "fid_summary.csv",
         checkpoint_path.parent / "fid_summary.csv",
@@ -452,22 +445,16 @@ def main() -> None:
             plot_fid_summary_csv(s, out_dir / "fid_summary_plot.png")
             break
 
-    # copy any eval grids produced by scripts/evaluate_fid.py
+    # Copy the generated/real evaluation grids if they were created already.
     eval_dir = checkpoint_path.parent / "eval"
-    try:
-        import shutil
-
-        if eval_dir.is_dir():
-            for name in ("generated_grid.png", "generated_grid.jpg", "generated_grid.jpeg", "generated_grid.webp"):
-                candidate = eval_dir / name
-                if candidate.is_file():
-                    shutil.copy(candidate, out_dir / candidate.name)
-            for name in ("real_grid.png",):
-                candidate = eval_dir / name
-                if candidate.is_file():
-                    shutil.copy(candidate, out_dir / candidate.name)
-    except Exception:
-        pass
+    if eval_dir.is_dir():
+        for name in ("generated_grid.png", "generated_grid.jpg", "generated_grid.jpeg", "generated_grid.webp"):
+            candidate = eval_dir / name
+            if candidate.is_file():
+                shutil.copy(candidate, out_dir / candidate.name)
+        real_grid = eval_dir / "real_grid.png"
+        if real_grid.is_file():
+            shutil.copy(real_grid, out_dir / real_grid.name)
 
     if not args.no_samples:
         preview_count = max(1, args.num_preview_images)
