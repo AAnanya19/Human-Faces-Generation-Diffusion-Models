@@ -8,14 +8,14 @@ Overleaf link: _TBC, Talha to share._
 
 Per Hannah's message on WhatsApp:
 
-| Section | Marks | First pass | Reviewer |
+| Section | Marks | First pass | Reviewers |
 |---|---|---|---|
-| Abstract | 5% | Zannat | Hannah |
-| Introduction | 10% | Zannat | Ananya |
-| Literature review | 15% | Hannah | Zannat |
-| Methodology | 20% | Ananya | Talha |
-| Experiments | 25% | Hannah + Talha | Ananya + Fiyin |
-| Conclusion + future work | 5% | Fiyin | Zannat |
+| Abstract | 5% | Zannat | All |
+| Introduction | 10% | Zannat | All |
+| Literature review | 15% | Hannah | All |
+| Methodology | 20% | Ananya | All |
+| Experiments | 25% | Hannah + Talha | All |
+| Conclusion + future work | 5% | Fiyin | All |
 
 "First pass" means whoever drafts the section first. We all still review and edit every section, since the coursework is explicit that there is no sole owner of any component and that every member must demonstrate working knowledge of the whole project. Reviewing matters as much as drafting; please leave Overleaf comments on each other's sections.
 
