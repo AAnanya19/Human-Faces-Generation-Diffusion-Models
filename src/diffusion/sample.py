@@ -33,6 +33,12 @@ At the end of the loop:
 import torch
 
 
+def _call_model(model, x_t, timesteps, model_kwargs=None):
+    if model_kwargs:
+        return model(x_t, timesteps, **model_kwargs)
+    return model(x_t, timesteps)
+
+
 @torch.no_grad()
 def sample(
     model: torch.nn.Module,
@@ -42,6 +48,7 @@ def sample(
     channels: int = 3,
     device: str = "cpu",
     initial_noise: torch.Tensor | None = None,
+    model_kwargs: dict | None = None,
 ) -> torch.Tensor:
     """
     Generate a batch of images using the full reverse diffusion process.
@@ -103,7 +110,7 @@ def sample(
         timesteps = torch.full((batch_size,), t, device=device, dtype=torch.long)
 
         # Predict the noise present in the current sample x_t
-        pred_noise = model(x_t, timesteps)
+        pred_noise = _call_model(model, x_t, timesteps, model_kwargs=model_kwargs)
 
         # Use the scheduler to take one reverse step:
         #   x_t -> x_{t-1}
@@ -124,6 +131,7 @@ def sample_with_trajectory(
     device: str = "cpu",
     save_every: int = 100,
     initial_noise: torch.Tensor | None = None,
+    model_kwargs: dict | None = None,
 ):
     """
     Generate images while also storing intermediate denoising states.
@@ -176,7 +184,7 @@ def sample_with_trajectory(
         timesteps = torch.full((batch_size,), t, device=device, dtype=torch.long)
 
         # Model predicts the noise component in the current sample
-        pred_noise = model(x_t, timesteps)
+        pred_noise = _call_model(model, x_t, timesteps, model_kwargs=model_kwargs)
 
         # Scheduler computes one reverse step
         x_t = scheduler.sample_previous_timestep(x_t, pred_noise, timesteps)
