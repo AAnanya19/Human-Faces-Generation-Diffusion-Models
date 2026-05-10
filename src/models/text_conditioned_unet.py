@@ -285,7 +285,6 @@ class TextConditionedUNet(nn.Module):
         vocab_size: int,
         max_length: int = 128,
         text_dim: int = 256,
-        conditioning_dim: int | None = None,
         in_channels: int = 3,
         out_channels: int = 3,
         base_channels: int = 64,
@@ -304,14 +303,6 @@ class TextConditionedUNet(nn.Module):
             vocab_size=vocab_size,
             text_dim=text_dim,
             max_length=max_length,
-        )
-        self.conditioning_projection = (
-            nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(conditioning_dim, text_dim),
-            )
-            if conditioning_dim is not None
-            else None
         )
 
         self.time_embedding = nn.Sequential(
@@ -397,21 +388,11 @@ class TextConditionedUNet(nn.Module):
         self,
         x: torch.Tensor,
         timesteps: torch.Tensor,
-        text_tokens: torch.Tensor | None = None,
+        text_tokens: torch.Tensor,
         text_mask: torch.Tensor | None = None,
-        conditioning_embeddings: torch.Tensor | None = None,
     ) -> torch.Tensor:
         time_emb = self.time_embedding(timesteps)
-        if conditioning_embeddings is not None:
-            if self.conditioning_projection is None:
-                raise ValueError(
-                    "conditioning_embeddings were provided, but this model was not initialised with conditioning_dim."
-                )
-            text_emb = self.conditioning_projection(conditioning_embeddings.float())
-        else:
-            if text_tokens is None:
-                raise ValueError("text_tokens or conditioning_embeddings must be provided")
-            text_emb = self.text_encoder(text_tokens, text_mask=text_mask)
+        text_emb = self.text_encoder(text_tokens, text_mask=text_mask)
         x = self.init_conv(x)
         skips = []
         for stage in self.down_stages:

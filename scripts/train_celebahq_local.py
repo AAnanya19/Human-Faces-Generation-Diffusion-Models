@@ -127,7 +127,6 @@ def parse_args() -> argparse.Namespace:
     model.add_argument("--num_res_blocks", type=int, default=2)
     model.add_argument("--dropout", type=float, default=0.1)
     model.add_argument("--attention_resolutions", type=str, default="16,8")
-    model.add_argument("--conditioning_metadata_file", type=str, default=None)
 
     # Training params
     training = parser.add_argument_group("Training params")
@@ -241,7 +240,6 @@ def main() -> None:
         folder_test_size=args.folder_test_size,
         split_seed=args.split_seed,
         num_workers=args.num_workers,
-        conditioning_metadata_file=args.conditioning_metadata_file,
         # Evaluation params
         sample_every=args.sample_every,
         num_sample_images=args.num_sample_images,

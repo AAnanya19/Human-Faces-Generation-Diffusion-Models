@@ -28,7 +28,6 @@ from src.diffusion.evaluation.metrics import (  # noqa: E402
 from src.diffusion.sample import sample, sample_with_trajectory  # noqa: E402
 from src.diffusion.scheduler import DDPMScheduler  # noqa: E402
 from src.models.unet import UNet  # noqa: E402
-from src.models.text_conditioned_unet import TextConditionedUNet  # noqa: E402
 
 
 def resolve_device(requested_device: str | None) -> str:
@@ -46,25 +45,6 @@ def parse_int_list(raw: str) -> tuple[int, ...]:
     if not values:
         raise ValueError(f"Expected comma-separated integers, got: {raw!r}")
     return values
-
-
-def unpack_batch(batch):
-    if isinstance(batch, dict):
-        return batch["image"], batch.get("conditioning")
-    return batch, None
-
-
-def expand_model_kwargs(model_kwargs: dict | None, batch_size: int) -> dict | None:
-    if not model_kwargs:
-        return None
-
-    expanded = {}
-    for key, value in model_kwargs.items():
-        if torch.is_tensor(value) and value.ndim >= 1 and value.shape[0] == 1 and batch_size > 1:
-            expanded[key] = value.repeat(batch_size, *([1] * (value.ndim - 1)))
-        else:
-            expanded[key] = value
-    return expanded
 
 
 def get_current_lr(optimizer: torch.optim.Optimizer) -> float:
@@ -397,7 +377,6 @@ def save_generated_samples(
     save_path: Path,
     batch_size: int,
     seed: int | None = None,
-    model_kwargs: dict | None = None,
 ) -> None:
     initial_noise = None
     if seed is not None:
@@ -414,7 +393,6 @@ def save_generated_samples(
         channels=3,
         device=device,
         initial_noise=initial_noise,
-        model_kwargs=model_kwargs,
     )
     images = (images.clamp(-1, 1) + 1) * 0.5
     save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -432,7 +410,6 @@ def save_trajectory_samples(
     channels: int = 3,
     seed: int = 0,
     save_every: int = 100,
-    model_kwargs: dict | None = None,
 ) -> None:
     initial_noise = make_seeded_noise(
         (1, channels, image_size, image_size),
@@ -448,7 +425,6 @@ def save_trajectory_samples(
         device=device,
         save_every=save_every,
         initial_noise=initial_noise,
-        model_kwargs=model_kwargs,
     )
     frames = [((frame.clamp(-1, 1) + 1) * 0.5).cpu() for frame in trajectory]
     grid = torch.cat(frames, dim=0)
@@ -461,7 +437,6 @@ def collect_real_fid_images(test_loader, *, num_images: int) -> torch.Tensor:
     images = []
     collected = 0
     for batch in test_loader:
-        batch, _ = unpack_batch(batch)
         needed = num_images - collected
         if needed <= 0:
             break
@@ -488,7 +463,6 @@ def generate_images_for_fid(
     batch_size: int,
     seed: int,
     save_dir: Path | None,
-    model_kwargs: dict | None = None,
 ) -> torch.Tensor:
     generated_batches = []
     generated = 0
@@ -500,7 +474,6 @@ def generate_images_for_fid(
             device=device,
             seed=seed + batch_index,
         )
-        current_model_kwargs = expand_model_kwargs(model_kwargs, current_batch_size)
         images = sample(
             model,
             scheduler,
@@ -509,7 +482,6 @@ def generate_images_for_fid(
             channels=3,
             device=device,
             initial_noise=initial_noise,
-            model_kwargs=current_model_kwargs,
         )
         images = ((images.clamp(-1, 1) + 1) * 0.5).cpu()
         if save_dir is not None:
@@ -539,7 +511,6 @@ def evaluate_fid(
     fid_batch_size: int,
     fid_seed: int,
     save_generated_dir: Path | None,
-    model_kwargs: dict | None = None,
 ) -> tuple[float, torch.Tensor]:
     if real_features is None:
         print(f"Collecting {fid_num_images} fixed real test images for FID.")
@@ -560,7 +531,6 @@ def evaluate_fid(
         batch_size=fid_batch_size,
         seed=fid_seed,
         save_dir=save_generated_dir,
-        model_kwargs=model_kwargs,
     )
     generated_features = collect_features(
         generated_images,
@@ -603,7 +573,6 @@ def train(
     folder_test_size: int = 0,
     split_seed: int = 42,
     num_workers: int = 0,
-    conditioning_metadata_file: str | None = None,
     resume_checkpoint: str | None = None,
     # Evaluation
     sample_every: int = 10,
@@ -661,7 +630,6 @@ def train(
                 "folder_test_size": folder_test_size,
                 "split_seed": split_seed,
                 "num_workers": num_workers,
-                "conditioning_metadata_file": conditioning_metadata_file,
             },
         },
         "evaluation": {
@@ -702,12 +670,10 @@ def train(
         seed=split_seed,
         folder_subset_size=folder_subset_size,
         folder_test_size=folder_test_size,
-        conditioning_metadata_file=conditioning_metadata_file,
         num_workers=num_workers,
         return_split_info=True,
     )
     write_split_files(save_dir, split_info)
-    conditioning_dim = split_info.get("conditioning_dim") if split_info else None
     if split_info is not None:
         train_files = split_info.get("train_files")
         test_files = split_info.get("test_files")
@@ -719,8 +685,6 @@ def train(
         run_metadata["training"]["dataset"]["test_size"] = (
             len(test_files) if test_files is not None else None
         )
-        run_metadata["training"]["dataset"]["conditioning_enabled"] = split_info.get("conditioning_enabled")
-        run_metadata["training"]["dataset"]["conditioning_dim"] = conditioning_dim
     if enable_fid:
         if test_loader is None:
             raise ValueError("FID is enabled but no test loader exists. Set --folder_test_size 300.")
@@ -732,35 +696,17 @@ def train(
             )
     write_run_metadata(save_dir, run_metadata)
 
-    use_conditioning = conditioning_dim is not None
-    if use_conditioning:
-        model = TextConditionedUNet(
-            vocab_size=4,
-            max_length=1,
-            text_dim=conditioning_dim,
-            conditioning_dim=conditioning_dim,
-            in_channels=3,
-            out_channels=3,
-            base_channels=base_channels,
-            time_dim=time_dim,
-            channel_mults=channel_mults,
-            num_res_blocks=num_res_blocks,
-            dropout=dropout,
-            attention_resolutions=attention_resolutions,
-            image_size=image_size,
-        ).to(device)
-    else:
-        model = UNet(
-            in_channels=3,
-            out_channels=3,
-            base_channels=base_channels,
-            time_dim=time_dim,
-            channel_mults=channel_mults,
-            num_res_blocks=num_res_blocks,
-            dropout=dropout,
-            attention_resolutions=attention_resolutions,
-            image_size=image_size,
-        ).to(device)
+    model = UNet(
+        in_channels=3,
+        out_channels=3,
+        base_channels=base_channels,
+        time_dim=time_dim,
+        channel_mults=channel_mults,
+        num_res_blocks=num_res_blocks,
+        dropout=dropout,
+        attention_resolutions=attention_resolutions,
+        image_size=image_size,
+    ).to(device)
     scheduler = DDPMScheduler(
         timesteps=timesteps,
         noise_schedule=noise_schedule,
@@ -802,24 +748,13 @@ def train(
     stopped_early = False
     final_epoch = start_epoch
 
-    fixed_model_kwargs = None
-    if conditioning_dim is not None:
-        first_batch = next(iter(train_loader))
-        _, fixed_conditioning = unpack_batch(first_batch)
-        if fixed_conditioning is not None:
-            fixed_model_kwargs = {"conditioning_embeddings": fixed_conditioning[:1].to(device)}
-
     for epoch in range(start_epoch, epochs):
         model.train()
         running_loss = 0.0
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{epochs}")
 
         for batch in progress_bar:
-            x_start, conditioning = unpack_batch(batch)
-            x_start = x_start.to(device)
-            model_kwargs = None
-            if conditioning is not None:
-                model_kwargs = {"conditioning_embeddings": conditioning.to(device)}
+            x_start = batch.to(device)
             noise = torch.randn_like(x_start)
             batch_size_current = x_start.shape[0]
             timesteps_batch = torch.randint(
@@ -829,7 +764,7 @@ def train(
                 device=device,
             ).long()
             x_t = scheduler.add_noise(x_start, noise, timesteps_batch)
-            pred_noise = model(x_t, timesteps_batch, **(model_kwargs or {}))
+            pred_noise = model(x_t, timesteps_batch)
             loss = criterion(pred_noise, noise)
 
             optimizer.zero_grad()
@@ -870,7 +805,6 @@ def train(
                     save_path=sample_dir / f"epoch_{current_epoch}.png",
                     batch_size=num_sample_images,
                     seed=fixed_sample_seed,
-                    model_kwargs=expand_model_kwargs(fixed_model_kwargs, num_sample_images),
                 )
                 save_trajectory_samples(
                     model,
@@ -880,7 +814,6 @@ def train(
                     save_path=trajectory_dir / f"epoch_{current_epoch}.png",
                     seed=fixed_trajectory_seed,
                     save_every=trajectory_save_every,
-                    model_kwargs=fixed_model_kwargs,
                 )
 
             if should_fid:
@@ -904,7 +837,6 @@ def train(
                     fid_batch_size=fid_batch_size,
                     fid_seed=fid_seed,
                     save_generated_dir=generated_dir,
-                    model_kwargs=fixed_model_kwargs,
                 )
                 is_best = best_fid is None or fid_score < best_fid
                 if is_best:
@@ -1060,7 +992,6 @@ if __name__ == "__main__":
     training.add_argument("--folder_test_size", type=int, default=0)
     training.add_argument("--split_seed", type=int, default=42)
     training.add_argument("--num_workers", type=int, default=0)
-    training.add_argument("--conditioning_metadata_file", type=str, default=None)
     training.add_argument("--resume_checkpoint", type=str, default=None)
 
     # Evaluation
@@ -1113,7 +1044,6 @@ if __name__ == "__main__":
         folder_test_size=args.folder_test_size,
         split_seed=args.split_seed,
         num_workers=args.num_workers,
-        conditioning_metadata_file=args.conditioning_metadata_file,
         resume_checkpoint=args.resume_checkpoint,
         sample_every=args.sample_every,
         num_sample_images=args.num_sample_images,
