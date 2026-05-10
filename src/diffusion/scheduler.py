@@ -1,26 +1,32 @@
 # diffusion/scheduler.py
 """
-DDPM Scheduler
+Diffusion Scheduler (cosine noise schedule)
 
 This file:
 - Defines the noise schedule used in diffusion training and sampling
-- Implements the forward diffusion process 
-- Implements one reverse denoising step 
+- Implements the forward diffusion process
+- Implements one reverse denoising step
 
-Reference
+References:
 - Ho et al., "Denoising Diffusion Probabilistic Models", 2020
-- The scheduler is inspired by standard DDPM implementations
-  used in tutorials and libraries such as Hugging Face Diffusers,
-  but is reimplemented in a smaller and clearer form
-  for this task.
+- Nichol & Dhariwal, "Improved Denoising Diffusion Probabilistic Models", 2021
+  (cosine schedule, Section 3.2)
 
- Note:
+Note:
 - This is a simple scheduler for unconditional image generation.
 - It includes only parts needed for:
     1. adding noise during training
     2. stepping backwards during sampling
 
-Mathematical summary:
+Noise schedule — cosine (Nichol & Dhariwal 2021):
+    f(t) = cos( (t/T + s) / (1 + s) * pi/2 )^2
+    alpha_bar_t = f(t) / f(0)
+    beta_t = 1 - alpha_bar_t / alpha_bar_{t-1}   (clipped to 0.9999)
+
+    Compared to the original linear beta schedule, the cosine schedule keeps
+    alpha_bar_t higher for longer, which means images retain more structure
+    at intermediate timesteps. This leads to better sample quality.
+
 Forward process:
     x_t = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * epsilon
     where epsilon ~ N(0, I)
@@ -38,6 +44,8 @@ This implementation assumes:
 - timesteps are integer indices in [0, T-1]
 """
 
+import math
+
 import torch
 
 
@@ -52,45 +60,47 @@ class DDPMScheduler:
     def __init__(
         self,
         timesteps: int = 1000,
-        beta_start: float = 1e-4,
-        beta_end: float = 2e-2,
         device: str = "cpu",
+        s: float = 0.008,
     ):
         """
         Args:
             timesteps:
-                Total number of diffusion steps T.     
+                Total number of diffusion steps T.
 
-            beta_start:
-                The first beta value in the variance schedule.
-                This should be small because early noising steps should be gentle.
-
-            beta_end:
-                The last beta value in the variance schedule.
-                This is larger because later steps can add more noise.
-
+            s:
+                Small offset for the cosine schedule (Nichol & Dhariwal, 2021).
+                Prevents beta from being too small near t=0. Default 0.008.
         """
         self.timesteps = timesteps
         self.device = torch.device(device)
 
-       
-        # 1. Create the beta schedule
+        # 1. Cosine noise schedule (Nichol & Dhariwal, 2021)
         # ------------------------------------------------------------------
-        # beta_t controls how much noise is added at each timestep.
-        # We use a simple linear schedule from beta_start to beta_end.
-        self.betas = torch.linspace(beta_start, beta_end, timesteps, device=device)
+        # Compute alpha_bar_t directly from the cosine function, then derive
+        # betas from consecutive ratios. This gives a much smoother schedule
+        # than a linear beta ramp: signal decays slowly at first and faster
+        # near the end, keeping more image structure at mid-timesteps.
+        #
+        #   f(t) = cos( (t/T + s) / (1 + s) * pi/2 )^2
+        #   alpha_bar_t = f(t) / f(0)
+        #   beta_t = 1 - alpha_bar_t / alpha_bar_{t-1}
 
-        # alpha_t is the amount of signal retained at each step.
+        steps = timesteps + 1  # need t = 0, 1, ..., T
+        t = torch.linspace(0, timesteps, steps, device=device) / timesteps
+        f = torch.cos((t + s) / (1.0 + s) * math.pi / 2.0) ** 2
+
+        # alpha_cumprod for t = 1 ... T (shape [T])
+        alpha_cumprod_full = f / f[0]
+        self.alpha_cumprod = alpha_cumprod_full[1:].clamp(min=1e-8)
+
+        # Derive betas: beta_t = 1 - alpha_bar_t / alpha_bar_{t-1}
+        # Clip to 0.9999 to avoid numerical issues at the final timestep.
+        self.betas = (1.0 - self.alpha_cumprod / alpha_cumprod_full[:-1]).clamp(max=0.9999)
         self.alphas = 1.0 - self.betas
 
-        # alpha_bar_t (cumulative product of alphas)
-        # tells us how much of the original image survives after repeatedly
-        # applying  forward process up to timestep t.
-        self.alpha_cumprod = torch.cumprod(self.alphas, dim=0)
-
-        # We store alpha_cumprod from the previous timestep.
-        # For t = 0, we define alpha_cumprod_prev = 1.0
-        # because before any noise is added, the image is still perfectly clean.
+        # alpha_cumprod from the previous timestep; alpha_cumprod_prev[0] = 1
+        # because before any noise is added the image is still perfectly clean.
         self.alpha_cumprod_prev = torch.cat(
             [torch.tensor([1.0], device=device), self.alpha_cumprod[:-1]],
             dim=0,
@@ -108,13 +118,7 @@ class DDPMScheduler:
 
         # 3. Posterior variance for reverse sampling
         # ------------------------------------------------------------------
-        # In DDPM, the reverse process uses a Gaussian with:
-        #   mean = model-dependent term
-        #   variance = posterior_variance_t
-        #  Posterior variance is:
-        #   beta_t * (1 - alpha_bar_{t-1}) / (1 - alpha_bar_t)
-        #
-        # This is used when sampling x_{t-1} from x_t.
+        # beta_t * (1 - alpha_bar_{t-1}) / (1 - alpha_bar_t)
         self.posterior_variance = (
             self.betas * (1.0 - self.alpha_cumprod_prev) / (1.0 - self.alpha_cumprod)
         )
@@ -269,9 +273,8 @@ class DDIMScheduler(DDPMScheduler):
     def __init__(
         self,
         timesteps: int = 1000,
-        beta_start: float = 1e-4,
-        beta_end: float = 2e-2,
         device: str = "cpu",
+        s: float = 0.008,
         ddim_steps: int = 50,
         eta: float = 0.0,
     ):
@@ -283,7 +286,7 @@ class DDIMScheduler(DDPMScheduler):
             eta:
                 Controls stochasticity. 0 = deterministic DDIM, 1 = DDPM-level noise.
         """
-        super().__init__(timesteps, beta_start, beta_end, device)
+        super().__init__(timesteps, device, s)
         self.ddim_steps = ddim_steps
         self.eta = eta
 
