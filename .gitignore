@@ -14,7 +14,7 @@ data/*
 runs/
 
 
-results/*
+
 !results/.gitkeep
 !results/butterflies/
 !results/butterflies/samples/
