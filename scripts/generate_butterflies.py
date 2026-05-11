@@ -2,7 +2,7 @@
 Load a trained U-Net checkpoint and write a grid of generated butterfly images.
 
 Example (from project root):
-    python scripts/generate_butterflies.py --checkpoint checkpoints/ddpm_final.pth
+    python3 scripts/generate_butterflies.py --checkpoint checkpoints/ddpm_final.pth
 """
 
 from __future__ import annotations

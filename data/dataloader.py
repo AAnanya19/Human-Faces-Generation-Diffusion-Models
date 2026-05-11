@@ -4,7 +4,6 @@ import torch
 from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
 
-
 class ButterflyDataset(torch.utils.data.Dataset):
     def __init__(self, hf_dataset, transform=None):
         self.dataset = hf_dataset
@@ -13,7 +12,6 @@ class ButterflyDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.dataset)
 
-    # Convert each image to RGB and apply preprocessing
     def __getitem__(self, idx):
         image = self.dataset[idx]["image"].convert("RGB")
         if self.transform:
@@ -47,10 +45,9 @@ class FolderImageDataset(torch.utils.data.Dataset):
         return image
 
 
-# Define preprocessing steps
-
-
 def get_transforms(image_size=128, train=True):
+    # The same resize and normalization pipeline will be used for both train and eval,
+    # Horizontal flip is only enabled during training.
     transform_steps = [
         transforms.Resize((image_size, image_size)),
     ]
@@ -62,17 +59,11 @@ def get_transforms(image_size=128, train=True):
     ])
     return transforms.Compose(transform_steps)
 
-# Load the full butterfly dataset without splitting
-
 
 def full_dataset():
     from datasets import load_dataset
 
     return load_dataset("huggan/smithsonian_butterflies_subset")["train"]
-
-
-# Pytorch dataloader for the full dataset
-
 
 def create_dataloaders(
     batch_size=32,
@@ -120,6 +111,7 @@ def create_dataloaders(
                 raise ValueError(
                     f"folder_subset_size={folder_subset_size} exceeds available images={total_images}"
                 )
+            # Take the first sorted paths so the subset is deterministic.
             selected_indices = list(range(folder_subset_size))
         else:
             selected_indices = list(range(total_images))
@@ -131,6 +123,7 @@ def create_dataloaders(
                 "folder_test_size must be smaller than the selected dataset size")
 
         if folder_test_size > 0:
+            # Use a seeded permutation so the split is reproducible.
             generator = torch.Generator().manual_seed(seed)
             permutation = torch.randperm(
                 len(selected_indices), generator=generator).tolist()
@@ -169,27 +162,3 @@ def create_dataloaders(
     if return_split_info:
         return train_loader, None, test_loader, split_info
     return train_loader, None, test_loader
-
-
-# UNCOMMENT TO CHECK THAT DATALOADERS ARE WORKING - CHECKS NORMALISATION AND IMAGES
-# def show_images(batch, title=""):
-#     fig, axes = plt.subplots(1, 6, figsize=(15, 3))
-#     fig.suptitle(title)
-
-#     for i in range(6):
-#         img = batch[i].permute(1, 2, 0).cpu()
-#         img = (img * 0.5) + 0.5  # unnormalize
-#         axes[i].imshow(img.clamp(0, 1))
-#         axes[i].axis("off")
-
-#     plt.show()
-
-
-# if __name__ == "__main__":
-#     train_loader, _, _ = create_dataloaders()
-
-#     train_batch = next(iter(train_loader))
-
-#     print("Train min/max:", train_batch.min().item(), train_batch.max().item())
-
-#     show_images(train_batch, "Train Batch")

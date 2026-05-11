@@ -1,7 +1,7 @@
 """
 DDPM U-Net baseline for image generation.
 
-This implementation keeps the standard DDPM epsilon-prediction setup and uses:
+The standard DDPM epsilon-prediction setup uses:
 - sinusoidal timestep embeddings
 - residual blocks with GroupNorm + SiLU
 - optional dropout inside residual blocks

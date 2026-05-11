@@ -16,11 +16,7 @@ if str(_ROOT) not in sys.path:
 
 from src.training.train import resolve_device, train  # noqa: E402
 
-
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
-
-
-
 
 def parse_bool(value: str | bool) -> bool:
     if isinstance(value, bool):
@@ -34,13 +30,11 @@ def parse_bool(value: str | bool) -> bool:
         "Expected a boolean value: true/false, yes/no, 1/0, or on/off."
     )
 
-
 def resolve_project_path(path: str | Path) -> Path:
     resolved = Path(path).expanduser()
     if not resolved.is_absolute():
         resolved = _ROOT / resolved
     return resolved
-
 
 def count_images(root: Path) -> int:
     if not root.exists():
@@ -50,7 +44,6 @@ def count_images(root: Path) -> int:
         for path in root.rglob("*")
         if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
     )
-
 
 def zip_has_top_level_folder(zip_path: Path, folder_name: str) -> bool:
     with zipfile.ZipFile(zip_path, "r") as zip_file:

@@ -198,8 +198,7 @@ def build_lr_scheduler(
 
 class ModelEMA:
     """
-    Keeps an exponential moving average of trainable model weights.
-
+    Keeps an exponential moving average of trainable model weights. 
     Diffusion samples are often cleaner from EMA weights because they smooth out
     noisy step-to-step optimizer updates. The raw model is still kept for
     resuming training; EMA weights are used only for sampling/FID/checkpoint
