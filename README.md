@@ -20,8 +20,8 @@ The project also explores how architectural and training choices affect image qu
 
 | Configuration | FID Score | Notes                             |
 | ------------- | --------- | --------------------------------- |
-| Baseline      | TBC       | Default hyperparameters           |
-| Optimised     | TBC       | Best hyperparameter configuration |
+| Baseline      | 46.56     | Default hyperparameters           |
+| Optimised     | 40.98     | Best hyperparameter configuration |
 
 
 Results will be updated as experiments are completed.
