@@ -24,8 +24,6 @@ The project also explores how architectural and training choices affect image qu
 | Optimised     | 40.98     | Best hyperparameter configuration |
 
 
-Results will be updated as experiments are completed.
-
 ## Features
 
 - **DDPM Implementation:** U-Net-based diffusion model with configurable timesteps and noise schedules  
