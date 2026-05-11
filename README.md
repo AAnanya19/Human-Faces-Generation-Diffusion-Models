@@ -1,3 +1,5 @@
+All code and logic has been implemented by ourselves, generative ai has been used only for scripting and helper functions.
+
 # Human Faces Generation with Diffusion Models
 
 A group project focused on implementing a Denoising Diffusion Probabilistic Model (DDPM) for high quality image generation. The project begins with a butterfly toy task to validate the pipeline and build understanding of diffusion models, before scaling to human face generation on the CelebA-HQ 256×256 dataset. The project also includes a caption-conditioned CelebA-HQ experiment using frozen CLIP text features. The overall objective is to train a model that progressively transforms random noise into realistic images through a learned reverse diffusion process, and to evaluate image quality using qualitative analysis and quantitative metrics such as Fréchet Inception Distance (FID).
