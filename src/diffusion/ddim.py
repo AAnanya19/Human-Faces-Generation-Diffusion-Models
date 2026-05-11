@@ -1,8 +1,7 @@
 """DDIM sampling for epsilon-prediction diffusion models.
 
 DDIM uses the same trained denoising model and beta schedule as DDPM, but
-skips across a smaller set of reverse timesteps. With eta=0 it is deterministic
-for a fixed initial noise tensor; eta>0 adds stochasticity.
+later uses smaller set of reverse timesteps. eta 0 for deterministic; eta > 0 to randomise.
 """
 
 from __future__ import annotations
@@ -11,7 +10,7 @@ import torch
 
 
 class DDIMSampler:
-    """Sampler implementing DDIM updates on top of a DDPMScheduler."""
+    """Sampler implement DDIM update on top of DDPMScheduler."""
 
     def __init__(
         self,
@@ -115,7 +114,7 @@ class DDIMSampler:
         device: str = "cpu",
         initial_noise: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Generate a batch of images using DDIM reverse sampling."""
+        """Generate batch images using DDIM reverse sampling."""
         model.eval()
         if initial_noise is None:
             x_t = torch.randn(batch_size, channels, image_size, image_size, device=device)
