@@ -2,14 +2,16 @@
 
 Working folder for the EEEM068 group report.
 
-| File | Purpose |
+| File / Directory | Purpose |
 |---|---|
-| `OUTLINE.md` | Sections and what they cover, the figure list, and the outstanding TODOs. Read this first. |
-| `references.bib` | The bibliography. Add new entries here first. |
+| `OUTLINE.md` | Section plan, task division, experiment sweep numbers. Read this first. |
+| `references.bib` | BibTeX bibliography shared with Overleaf. |
+| `../results/celebahq/eval/figures/` | All training visualisations (10 figures). See the README inside for explanations. |
+| `../results/celebahq/eval/logs/` | Raw training log CSVs (one per experiment configuration). |
+| `../scripts/visualize_training_logs*.py` | Scripts that regenerate the figures from the CSVs. |
 
 ## Reminders from the coursework brief
 
-- The report is IEEE conference, two-column, **5 pages excluding references**. Appendices for figures and extra plots are allowed.
+- IEEE conference, two-column, **5 pages excluding references**. Appendices allowed.
 - Every member contributes to literature review, methodology, coding, training, evaluation, and writing. Lead-author labels in `OUTLINE.md`.
-- Anything we got help with from an LLM has to be read line-by-line and fully understood.
-- Creativity is 20% of the report mark and is graded across the whole thing. Tag creative bits in the source with `% creativity: short label` so we can spot them easily at the end.
+- Creativity is 20% of the report mark, graded across the whole paper.

@@ -20,6 +20,10 @@ results/*
 !results/butterflies/samples/
 !results/butterflies/loss_curves/
 !results/butterflies/eval/
+!results/celebahq/
+!results/celebahq/eval/
+!results/celebahq/eval/figures/
+!results/celebahq/eval/logs/
 
 checkpoints/
 *.pt
