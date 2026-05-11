@@ -1,4 +1,4 @@
-"""Compare DDPM and DDIM sampling with FID on the fixed test split.
+"""Compare DDPM and DDIM sampling with FID on  fixed test split.
 
 Example:
     python3 scripts/compare_ddim_ddpm_fid.py \
