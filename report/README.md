@@ -5,7 +5,6 @@ Working folder for the EEEM068 group report.
 | File / Directory | Purpose |
 |---|---|
 | `OUTLINE.md` | Section plan, task division, experiment sweep numbers. Read this first. |
-| `references.bib` | BibTeX bibliography shared with Overleaf. |
 | `../results/celebahq/eval/figures/` | All training visualisations (10 figures). See the README inside for explanations. |
 | `../results/celebahq/eval/logs/` | Raw training log CSVs (one per experiment configuration). |
 | `../scripts/visualize_training_logs*.py` | Scripts that regenerate the figures from the CSVs. |
